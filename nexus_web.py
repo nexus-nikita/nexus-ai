@@ -1,5 +1,6 @@
 import base64
 import json
+import logging
 import os
 import secrets
 import time
@@ -29,6 +30,7 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 app.secret_key = get_web_session_secret()
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def load_json(path, default):
@@ -105,7 +107,32 @@ def set_security_headers(response):
         "base-uri 'self'; "
         "form-action 'self'"
     )
+    log_event(
+        "request",
+        method=request.method,
+        path=request.path,
+        status=response.status_code,
+        ip=client_key(),
+    )
     return response
+
+
+@app.errorhandler(404)
+def not_found(_error):
+    if request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json":
+        return jsonify({"error": "Not found"}), 404
+    return redirect(url_for("index"))
+
+
+@app.errorhandler(500)
+def server_error(error):
+    log_event("server_error", path=request.path, error=str(error))
+    return jsonify({"error": "Internal server error"}), 500
+
+
+def log_event(event, **fields):
+    payload = {"event": event, "ts": datetime.utcnow().isoformat() + "Z", **fields}
+    app.logger.info(json.dumps(payload, ensure_ascii=False))
 
 
 LOGIN_HTML = """<!DOCTYPE html>
@@ -283,6 +310,24 @@ def get_stats():
     return jsonify(stats)
 
 
+@app.route("/healthz")
+def healthz():
+    return jsonify(
+        {
+            "ok": True,
+            "app": "nexus_web",
+            "time": datetime.utcnow().isoformat() + "Z",
+            "features": {
+                "stats": True,
+                "chat_stream": True,
+                "csrf": True,
+                "weather": bool(get_env("OPENWEATHER_API_KEY", "").strip()),
+                "nova_poshta": bool(get_env("NOVA_POSHTA_API_KEY", "").strip()),
+            },
+        }
+    )
+
+
 @app.route("/history")
 def get_history():
     if not logged_in():
@@ -437,6 +482,110 @@ def load_weather(city):
         }
     except Exception as exc:
         return {"city": city, "error": str(exc)}
+
+
+@app.route("/nova_poshta/track")
+def nova_poshta_track():
+    if not logged_in():
+        return jsonify({"error": "Нужен вход."}), 401
+    tracking_number = request.args.get("number", "").strip()
+    if not tracking_number:
+        return jsonify({"success": False, "error": "Укажите номер ТТН."})
+
+    api_key = get_env("NOVA_POSHTA_API_KEY", "").strip()
+    if not api_key:
+        return jsonify(
+            {
+                "success": False,
+                "error": "NOVA_POSHTA_API_KEY не задан. Добавьте ключ в Render Environment.",
+            }
+        )
+
+    payload = {
+        "apiKey": api_key,
+        "modelName": "TrackingDocument",
+        "calledMethod": "getStatusDocuments",
+        "methodProperties": {"Documents": [{"DocumentNumber": tracking_number}]},
+    }
+    request_data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.novaposhta.ua/v2.0/json/",
+        data=request_data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return jsonify(data)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)})
+
+
+@app.route("/invoice_pdf", methods=["POST"])
+def invoice_pdf():
+    if not logged_in():
+        return jsonify({"error": "Нужен вход."}), 401
+    data = request.get_json(silent=True) or {}
+    client = str(data.get("client", "Client"))
+    invoice_id = str(data.get("invoice_id", datetime.utcnow().strftime("%Y%m%d%H%M")))
+    items = data.get("items") or []
+    if not isinstance(items, list) or not items:
+        items = [{"name": "Service", "qty": 1, "price": float(data.get("amount", 0) or 0)}]
+
+    lines = [f"NEXUS invoice #{invoice_id}", f"Client: {client}", ""]
+    total = 0.0
+    for item in items:
+        name = str(item.get("name", "Item"))
+        qty = float(item.get("qty", 1) or 1)
+        price = float(item.get("price", 0) or 0)
+        amount = qty * price
+        total += amount
+        lines.append(f"{name} | {qty:g} x {price:.2f} = {amount:.2f}")
+    lines.extend(["", f"Total: {total:.2f} UAH"])
+
+    pdf = build_simple_pdf(lines)
+    return Response(
+        pdf,
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="invoice_{invoice_id}.pdf"'},
+    )
+
+
+def build_simple_pdf(lines):
+    def clean(text):
+        return str(text).encode("latin-1", errors="replace").decode("latin-1")
+
+    content = ["BT", "/F1 14 Tf", "50 790 Td"]
+    for idx, line in enumerate(lines):
+        if idx:
+            content.append("0 -22 Td")
+        escaped = clean(line).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        content.append(f"({escaped}) Tj")
+    content.append("ET")
+    stream = "\n".join(content).encode("latin-1")
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    pdf = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for idx, obj in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{idx} 0 obj\n".encode("ascii"))
+        pdf.extend(obj)
+        pdf.extend(b"\nendobj\n")
+    xref = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode("ascii"))
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        f"trailer << /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
+    )
+    return bytes(pdf)
 
 
 def make_audio(text):
