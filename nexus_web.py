@@ -1,6 +1,10 @@
 import base64
 import json
 import os
+import secrets
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -47,8 +51,61 @@ stats = {
     "voice": 0,
     "files": 0,
     "edits": 0,
+    "briefings": 0,
 }
 SYSTEM = build_system_prompt(profile)
+RATE_LIMIT = {}
+RATE_LIMIT_WINDOW = 60
+RATE_LIMIT_MAX_POSTS = 40
+
+
+def get_csrf_token():
+    if "csrf_token" not in session:
+        session["csrf_token"] = secrets.token_urlsafe(32)
+    return session["csrf_token"]
+
+
+def client_key():
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "local").split(",")[0].strip()
+
+
+@app.before_request
+def protect_requests():
+    if request.method != "POST":
+        return None
+
+    now = time.time()
+    key = client_key()
+    bucket = [stamp for stamp in RATE_LIMIT.get(key, []) if now - stamp < RATE_LIMIT_WINDOW]
+    if len(bucket) >= RATE_LIMIT_MAX_POSTS:
+        return jsonify({"error": "Rate limit exceeded"}), 429
+    bucket.append(now)
+    RATE_LIMIT[key] = bucket
+
+    if request.endpoint == "login":
+        return None
+    if logged_in() and request.headers.get("X-CSRF-Token") != session.get("csrf_token"):
+        return jsonify({"error": "Bad CSRF token"}), 403
+    return None
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Permissions-Policy"] = "camera=(), geolocation=(), payment=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "media-src 'self' data:; "
+        "connect-src 'self'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    return response
 
 
 LOGIN_HTML = """<!DOCTYPE html>
@@ -83,6 +140,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{ csrf_token }}">
 <title>NEXUS - Центр управления</title>
 <style>
 :root{--bg:#061014;--side:#08141a;--panel:#101d25;--panel2:#142833;--line:#25414b;--text:#eef8f9;--muted:#8da4ab;--soft:#c5d5d9;--cyan:#35d7e9;--green:#48e08c;--red:#ff7272;--amber:#f5bd63;--r:14px;--shadow:0 22px 60px rgba(0,0,0,.34)}
@@ -118,12 +176,13 @@ button,input,textarea{font:inherit}button{cursor:pointer}.app{height:100vh;displ
             <div class="card stat"><div class="num" id="sMessages">0</div><div><div class="lab">Сообщений</div><div class="hint">AI диалоги</div></div></div>
             <div class="card stat"><div class="num" id="sVoice">0</div><div><div class="lab">Голосовых</div><div class="hint">Команды голосом</div></div></div>
             <div class="card stat"><div class="num" id="sFiles">0</div><div><div class="lab">Файлов</div><div class="hint">Загружено в чат</div></div></div>
-            <div class="card stat"><div class="num" id="sEdits">0</div><div><div class="lab">Правок</div><div class="hint">Редактирование</div></div></div>
+            <div class="card stat"><div class="num" id="sBriefings">0</div><div><div class="lab">Брифингов</div><div class="hint">Погода и план</div></div></div>
           </div>
           <div class="grid2">
             <div class="card"><h3>Быстрый запрос</h3><div class="row"><input class="field" id="quickInput" placeholder="Спроси NEXUS..." onkeydown="if(event.key==='Enter')quickAsk()"><button class="btn" onclick="quickAsk()">Спросить</button></div><div id="quickResult" class="item-meta"></div></div>
             <div class="card"><h3>История и поиск</h3><input class="field" id="historyQuery" placeholder="Поиск по разговорам..." oninput="searchHistory()"><div id="historyResults" class="list"></div></div>
           </div>
+          <div class="card"><h3>Утренний брифинг</h3><div class="row"><input class="field" id="briefCity" placeholder="Город, например Kyiv" value="Kyiv"><button class="btn" onclick="loadBriefing()">Собрать</button></div><div id="briefingResult" class="item-meta"></div></div>
         </div>
       </div>
       <div class="page" id="chat">
@@ -149,24 +208,26 @@ button,input,textarea{font:inherit}button{cursor:pointer}.app{height:100vh;displ
 <script>
 var navItems=[['dashboard','📊','Dashboard'],['chat','💬','Чат'],['voice','🎙️','Голос'],['search','🔎','Поиск'],['files','📎','Файлы']];
 var currentAudio=null,recognition=null,isListening=false,wakeMode=false,messages=[],editingId=null;
+var csrfToken=document.querySelector('meta[name="csrf-token"]').content;
 function $(id){return document.getElementById(id)}function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML}
 function renderNav(){['sideNav','bottomNav'].forEach(function(id){$(id).innerHTML=navItems.map(function(n,i){return '<button class="'+(i===0?'active':'')+'" data-page="'+n[0]+'"><span class="emoji">'+n[1]+'</span>'+n[2]+'</button>'}).join('')});document.querySelectorAll('[data-page]').forEach(function(b){b.onclick=function(){showPage(b.dataset.page,b)}})}renderNav();
 function showPage(page,btn){document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});$(page).classList.add('active');document.querySelectorAll('[data-page]').forEach(function(x){x.classList.toggle('active',x.dataset.page===page)});$('pageTitle').textContent={dashboard:'Dashboard',chat:'Чат NEXUS',voice:'Voice Engine',search:'Поиск',files:'Файлы'}[page]||'NEXUS'}
 function alertMsg(t,ok){$('alert').innerHTML='<div class="alert '+(ok?'ok':'err')+'">'+esc(t)+'</div>';setTimeout(function(){$('alert').innerHTML=''},4200)}
-function api(url,opts){return fetch(url,opts).then(function(r){if(r.status===401){location.href='/login';return}return r.text().then(function(t){try{return JSON.parse(t)}catch(e){throw new Error('Сервер вернул не JSON: '+url)}})})}
+function api(url,opts){opts=opts||{};opts.headers=opts.headers||{};if(opts.method&&opts.method.toUpperCase()==='POST')opts.headers['X-CSRF-Token']=csrfToken;return fetch(url,opts).then(function(r){if(r.status===401){location.href='/login';return}return r.text().then(function(t){try{return JSON.parse(t)}catch(e){throw new Error('Сервер вернул не JSON: '+url)}})})}
 function md(t){var s=esc(t);s=s.replace(/```([\\s\\S]*?)```/g,function(_,c){return '<pre><code>'+c+'</code></pre>'});s=s.replace(/`([^`]+)`/g,'<code>$1</code>');s=s.replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');s=s.replace(/\\*([^*]+)\\*/g,'<em>$1</em>');s=s.replace(/^[-•] (.*)$/gm,'<li>$1</li>');s=s.replace(/(<li>[\\s\\S]*?<\\/li>)/g,'<ul>$1</ul>');return s.replace(/\\n/g,'<br>')}
 function updateClock(){$('clock').textContent=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}setInterval(updateClock,1000);updateClock();
-function loadStats(){api('/stats').then(function(d){if(!d)return;$('sMessages').textContent=d.messages||0;$('sVoice').textContent=d.voice||0;$('sFiles').textContent=d.files||0;$('sEdits').textContent=d.edits||0})}
+function loadStats(){api('/stats').then(function(d){if(!d)return;$('sMessages').textContent=d.messages||0;$('sVoice').textContent=d.voice||0;$('sFiles').textContent=d.files||0;$('sBriefings').textContent=d.briefings||0})}
 function loadHistory(){api('/history').then(function(d){messages=d.messages||[];renderMessages();searchHistory()})}
 function renderMessages(){var box=$('messages');box.innerHTML='';messages.slice(-40).forEach(function(m){var w=document.createElement('div');w.className='msgwrap '+(m.role==='user'?'user':'ai');w.dataset.id=m.id;w.innerHTML='<div class="speaker">'+(m.role==='user'?'Никита':'NEXUS')+'</div><div class="bubble '+(m.role==='user'?'user':'ai')+'">'+md(m.content)+'</div>'+(m.role==='user'?'<button class="edit-btn" onclick="editMessage(\\''+m.id+'\\')">Редактировать</button>':'');box.appendChild(w)});box.scrollTop=box.scrollHeight}
 function appendMessage(role,text,id){messages.push({id:id||String(Date.now()),role:role,content:text});renderMessages()}
 function editMessage(id){var m=messages.find(function(x){return x.id===id});if(!m)return;editingId=id;$('chatInput').value=m.content;$('chatInput').focus();alertMsg('Редактируйте текст и отправьте заново.',true)}
-function sendMsg(voice){var inp=$('chatInput'),text=inp.value.trim();if(!text)return;if(currentAudio){currentAudio.pause();currentAudio=null}inp.value='';var payload={message:text,voice:voice,edit_id:editingId};editingId=null;appendMessage('user',text);var aiId='ai-'+Date.now();appendMessage('assistant','',aiId);var aiMsg=messages[messages.length-1];$('speaking').classList.add('on');fetch('/chat_stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).then(function(r){var reader=r.body.getReader(),dec=new TextDecoder();function pump(){return reader.read().then(function(x){if(x.done){$('speaking').classList.remove('on');loadStats();loadHistory();return}dec.decode(x.value).split('\\n\\n').forEach(function(line){if(line.indexOf('data: ')===0){var data=JSON.parse(line.slice(6));if(data.token){aiMsg.content+=data.token;renderMessages()}if(data.audio){playB64(data.audio)}}});return pump()})}return pump()}).catch(function(e){aiMsg.content='Ошибка: '+e.message;renderMessages();$('speaking').classList.remove('on')})}
+function sendMsg(voice){var inp=$('chatInput'),text=inp.value.trim();if(!text)return;if(currentAudio){currentAudio.pause();currentAudio=null}inp.value='';var payload={message:text,voice:voice,edit_id:editingId};editingId=null;appendMessage('user',text);var aiId='ai-'+Date.now();appendMessage('assistant','',aiId);var aiMsg=messages[messages.length-1];$('speaking').classList.add('on');fetch('/chat_stream',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify(payload)}).then(function(r){var reader=r.body.getReader(),dec=new TextDecoder();function pump(){return reader.read().then(function(x){if(x.done){$('speaking').classList.remove('on');loadStats();loadHistory();return}dec.decode(x.value).split('\\n\\n').forEach(function(line){if(line.indexOf('data: ')===0){var data=JSON.parse(line.slice(6));if(data.token){aiMsg.content+=data.token;renderMessages()}if(data.audio){playB64(data.audio)}}});return pump()})}return pump()}).catch(function(e){aiMsg.content='Ошибка: '+e.message;renderMessages();$('speaking').classList.remove('on')})}
 function playB64(b64){if(currentAudio)currentAudio.pause();currentAudio=new Audio('data:audio/mp3;base64,'+b64);currentAudio.play().catch(function(){})}
 function quickAsk(){var v=$('quickInput').value.trim();if(!v)return;$('quickInput').value='';$('quickResult').textContent='Думаю...';api('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:v})}).then(function(d){$('quickResult').innerHTML=md(d.reply||'');loadStats();loadHistory()})}
 function searchHistory(inputId,outId){var q=($(inputId||'historyQuery')?.value||'').toLowerCase();var out=$(outId||'historyResults');if(!out)return;if(!q){out.innerHTML='<div class="item-meta">Введите текст для поиска.</div>';return}var found=messages.filter(function(m){return m.content.toLowerCase().indexOf(q)>=0}).slice(-8);out.innerHTML=found.map(function(m){return '<div class="item"><div class="item-title">'+(m.role==='user'?'Никита':'NEXUS')+'</div><div class="item-meta">'+esc(m.content).slice(0,180)+'</div></div>'}).join('')||'<div class="item-meta">Ничего не найдено</div>'}
 function toggleVoice(){if(currentAudio){currentAudio.pause();currentAudio=null;$('speaking').classList.remove('on')}if(!window.SpeechRecognition&&!window.webkitSpeechRecognition){alertMsg('Голосовой ввод доступен в Chrome.',false);return}if(isListening&&recognition){recognition.stop();return}var SR=window.SpeechRecognition||window.webkitSpeechRecognition;recognition=new SR();recognition.lang='ru-RU';recognition.continuous=false;recognition.interimResults=false;recognition.onstart=function(){isListening=true;$('micBtn').classList.add('recording');$('micBtn').textContent='⏹'};recognition.onend=function(){isListening=false;$('micBtn').classList.remove('recording');$('micBtn').textContent='🎤'};recognition.onerror=recognition.onend;recognition.onresult=function(e){var t=e.results[0][0].transcript;if(t.toLowerCase().indexOf('эй nexus')>=0||t.toLowerCase().indexOf('эй нексус')>=0){t=t.replace(/эй nexus/ig,'').replace(/эй нексус/ig,'').trim();wakeMode=true}if(t){$('chatInput').value=t;sendMsg(true)}};recognition.start()}
 function uploadChatFile(input){var f=input.files[0];if(!f)return;var fd=new FormData();fd.append('file',f);api('/upload_chat',{method:'POST',body:fd}).then(function(d){alertMsg(d.message||'Файл загружен',!!d.success);if($('fileResult'))$('fileResult').innerHTML='<div class="item"><div class="item-title">'+esc(f.name)+'</div><div class="item-meta">'+esc(d.message||'Файл загружен')+'</div></div>';loadStats();loadHistory()})}
+function loadBriefing(){var city=($('briefCity').value||'Kyiv').trim();$('briefingResult').textContent='Собираю брифинг...';api('/morning_briefing?city='+encodeURIComponent(city)).then(function(d){$('briefingResult').innerHTML=md(d.briefing||d.error||'');loadStats()}).catch(function(e){$('briefingResult').textContent=e.message})}
 loadStats();loadHistory();setInterval(loadStats,8000);
 </script>
 </body>
@@ -210,7 +271,11 @@ def logout():
 def index():
     if not logged_in():
         return redirect(url_for("login"))
-    return render_template_string(HTML, email=get_env("GMAIL", "photobusines63@gmail.com"))
+    return render_template_string(
+        HTML,
+        email=get_env("GMAIL", "photobusines63@gmail.com"),
+        csrf_token=get_csrf_token(),
+    )
 
 
 @app.route("/stats")
@@ -296,6 +361,82 @@ def upload_chat():
     history.append({"id": message_id(), "role": "user", "content": note})
     persist_history()
     return jsonify({"success": True, "message": note})
+
+
+@app.route("/weather")
+def weather():
+    if not logged_in():
+        return jsonify({"error": "Нужен вход."}), 401
+    city = request.args.get("city", get_env("DEFAULT_WEATHER_CITY", "Kyiv")).strip() or "Kyiv"
+    return jsonify(load_weather(city))
+
+
+@app.route("/morning_briefing")
+def morning_briefing():
+    if not logged_in():
+        return jsonify({"error": "Нужен вход."}), 401
+
+    city = request.args.get("city", get_env("DEFAULT_WEATHER_CITY", "Kyiv")).strip() or "Kyiv"
+    weather_data = load_weather(city)
+    stats["briefings"] += 1
+
+    weather_line = weather_data.get("summary") or weather_data.get("error") or "Погода пока недоступна."
+    recent = "\n".join(f"- {m.get('role')}: {m.get('content')}" for m in history[-8:])
+    prompt = (
+        "Собери короткий утренний брифинг для Никиты на русском языке.\n"
+        f"Погода: {weather_line}\n"
+        f"Последний контекст:\n{recent}\n"
+        "Формат: 1) погода, 2) фокус дня, 3) 3 действия."
+    )
+
+    try:
+        briefing = ask_ai([{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}])
+    except Exception:
+        briefing = (
+            f"**Погода:** {weather_line}\n"
+            "- Проверь срочные сообщения.\n"
+            "- Выбери 1 главный фокус на день.\n"
+            "- Зафиксируй следующие 3 действия."
+        )
+
+    return jsonify({"briefing": briefing, "weather": weather_data})
+
+
+def load_weather(city):
+    api_key = get_env("OPENWEATHER_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "city": city,
+            "error": "OPENWEATHER_API_KEY не задан. Добавьте ключ в Render Environment.",
+        }
+
+    params = urllib.parse.urlencode(
+        {
+            "q": city,
+            "appid": api_key,
+            "units": "metric",
+            "lang": "ru",
+        }
+    )
+    url = "https://api.openweathermap.org/data/2.5/weather?" + params
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        temp = round(data.get("main", {}).get("temp", 0))
+        feels = round(data.get("main", {}).get("feels_like", temp))
+        wind = data.get("wind", {}).get("speed", 0)
+        desc = (data.get("weather") or [{}])[0].get("description", "")
+        name = data.get("name", city)
+        return {
+            "city": name,
+            "temp": temp,
+            "feels_like": feels,
+            "wind": wind,
+            "description": desc,
+            "summary": f"{name}: {temp}°C, ощущается как {feels}°C, {desc}, ветер {wind} м/с.",
+        }
+    except Exception as exc:
+        return {"city": city, "error": str(exc)}
 
 
 def make_audio(text):
