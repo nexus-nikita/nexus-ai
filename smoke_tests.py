@@ -55,6 +55,29 @@ def main():
     )
     check("invoice pdf", pdf.status_code == 200 and pdf.data.startswith(b"%PDF-1.4"))
 
+    capabilities = client.get("/capabilities")
+    check("capabilities registry", capabilities.status_code == 200 and "capabilities" in capabilities.json)
+
+    users = client.get("/users")
+    check("users admin endpoint", users.status_code == 200 and "users" in users.json)
+
+    agents = client.get("/agents")
+    check("agents endpoint", agents.status_code == 200 and "agents" in agents.json)
+
+    task = client.post(
+        "/tasks",
+        json={"title": "Smoke test task"},
+        headers={"X-CSRF-Token": token},
+    )
+    check("tasks endpoint", task.status_code == 200 and task.json.get("success") is True)
+
+    command = client.post(
+        "/command",
+        json={"command": "добавь задачу проверить NEXUS"},
+        headers={"X-CSRF-Token": token},
+    )
+    check("command router", command.status_code == 200 and command.json.get("action") == "task_created")
+
     print("All smoke tests passed.")
 
 

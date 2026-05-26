@@ -25,6 +25,7 @@ from nexus_common import (
 BASE_DIR = Path(__file__).resolve().parent
 MEMORY_FILE = BASE_DIR / "nexus_memory.json"
 PROFILE_FILE = BASE_DIR / "nexus_profile.json"
+STATE_FILE = BASE_DIR / "nexus_state.json"
 UPLOAD_DIR = BASE_DIR / "chat_uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
@@ -48,12 +49,56 @@ def save_json(path, data):
 
 profile = load_json(PROFILE_FILE, DEFAULT_PROFILE.copy())
 history = load_json(MEMORY_FILE, [])
+DEFAULT_STATE = {
+    "users": [
+        {"username": "admin", "role": "admin", "password": ""},
+        {"username": "partner", "role": "employee", "password": ""},
+        {"username": "guest", "role": "guest", "password": ""},
+    ],
+    "tasks": [],
+    "agents": [
+        {
+            "id": "restaurant",
+            "name": "AI-агент общепита",
+            "description": "Меню, клиенты, отзывы, бронирования, ежедневная выручка.",
+            "status": "template",
+        },
+        {
+            "id": "aqua",
+            "name": "AI-агент аква бизнеса",
+            "description": "Клиенты, сервис, заявки, поставки, повторные продажи.",
+            "status": "template",
+        },
+        {
+            "id": "sales",
+            "name": "AI-агент продаж",
+            "description": "Лиды, follow-up, CRM, скрипты и отчеты по продажам.",
+            "status": "template",
+        },
+    ],
+    "integrations": {
+        "openai": "env:OPENAI_API_KEY",
+        "telegram": "env:TELEGRAM_TOKEN",
+        "weather": "env:OPENWEATHER_API_KEY",
+        "nova_poshta": "env:NOVA_POSHTA_API_KEY",
+        "email": "env:GMAIL+APP_PASSWORD",
+        "calendar": "env:GOOGLE_SERVICE_ACCOUNT",
+        "monobank": "planned",
+        "google_maps": "planned",
+        "whatsapp": "planned",
+        "instagram": "planned",
+        "notion": "planned",
+        "discord": "planned",
+    },
+}
+state = load_json(STATE_FILE, DEFAULT_STATE.copy())
 stats = {
     "messages": len([m for m in history if m.get("role") == "user"]),
     "voice": 0,
     "files": 0,
     "edits": 0,
     "briefings": 0,
+    "commands": 0,
 }
 SYSTEM = build_system_prompt(profile)
 RATE_LIMIT = {}
@@ -277,13 +322,94 @@ def persist_history():
     save_json(MEMORY_FILE, history[-160:])
 
 
+def persist_state():
+    save_json(STATE_FILE, state)
+
+
+def current_user():
+    return {
+        "username": session.get("username", "anonymous"),
+        "role": session.get("role", "guest"),
+    }
+
+
+def has_role(*roles):
+    return session.get("role") in roles
+
+
+def require_roles(*roles):
+    if not logged_in():
+        return jsonify({"error": "Нужен вход."}), 401
+    if roles and not has_role(*roles):
+        return jsonify({"error": "Недостаточно прав."}), 403
+    return None
+
+
+def integration_status():
+    result = {}
+    for name, marker in state.get("integrations", {}).items():
+        if marker == "planned":
+            result[name] = {"status": "planned"}
+        elif marker.startswith("env:"):
+            env_names = marker[4:].split("+")
+            configured = all(bool(get_env(env_name, "").strip()) for env_name in env_names)
+            result[name] = {"status": "configured" if configured else "missing_env", "env": env_names}
+        else:
+            result[name] = {"status": "unknown"}
+    return result
+
+
+def capability_map():
+    return {
+        "text_chat": "done",
+        "context_memory": "done",
+        "web_dashboard": "done",
+        "password_auth": "done",
+        "roles": "basic",
+        "csrf": "done",
+        "rate_limit": "done",
+        "security_headers": "done",
+        "streaming_responses": "done",
+        "markdown_chat": "done",
+        "chat_file_upload": "done",
+        "message_editing": "done",
+        "history_search": "done",
+        "voice_input": "browser_basic",
+        "wake_word": "browser_experimental",
+        "voice_interruption": "basic",
+        "weather_briefing": "env_required",
+        "nova_poshta": "env_required",
+        "pdf_invoices": "done",
+        "business_agents": "basic_templates",
+        "tasks": "basic",
+        "postgresql": "planned",
+        "fastapi_nextjs": "planned_rearchitecture",
+        "docker": "planned",
+        "2fa": "planned",
+        "vector_rag": "partial_files_only",
+        "monobank": "planned",
+        "google_maps": "planned",
+        "whatsapp": "planned",
+    }
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = ""
     if request.method == "POST":
-        if request.form.get("password", "") == require_web_password():
+        username = request.form.get("username", "admin").strip() or "admin"
+        password = request.form.get("password", "")
+        if password == require_web_password():
             session["logged_in"] = True
+            session["username"] = username
+            session["role"] = "admin"
             return redirect(url_for("index"))
+        for user in state.get("users", []):
+            if user.get("username") == username and user.get("password") and user.get("password") == password:
+                session["logged_in"] = True
+                session["username"] = username
+                session["role"] = user.get("role", "guest")
+                return redirect(url_for("index"))
         error = "Неверный пароль."
     return render_template_string(LOGIN_HTML, error=error)
 
@@ -326,6 +452,135 @@ def healthz():
             },
         }
     )
+
+
+@app.route("/capabilities")
+def capabilities():
+    guard = require_roles("admin", "employee")
+    if guard:
+        return guard
+    return jsonify(
+        {
+            "user": current_user(),
+            "capabilities": capability_map(),
+            "integrations": integration_status(),
+            "roadmap_next": [
+                "2FA",
+                "PostgreSQL migration",
+                "Vector RAG over uploaded files",
+                "Monobank import",
+                "Google Maps reviews",
+                "WhatsApp bot",
+                "Docker deployment",
+            ],
+        }
+    )
+
+
+@app.route("/users", methods=["GET", "POST"])
+def users():
+    guard = require_roles("admin")
+    if guard:
+        return guard
+    if request.method == "GET":
+        safe_users = [{k: v for k, v in user.items() if k != "password"} for user in state.get("users", [])]
+        return jsonify({"users": safe_users})
+
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username", "")).strip()
+    role = str(data.get("role", "guest")).strip()
+    password = str(data.get("password", "")).strip()
+    if not username or role not in {"admin", "employee", "guest"}:
+        return jsonify({"success": False, "error": "Укажите username и роль admin/employee/guest."})
+    for user in state.get("users", []):
+        if user.get("username") == username:
+            user["role"] = role
+            if password:
+                user["password"] = password
+            persist_state()
+            return jsonify({"success": True, "updated": True})
+    state.setdefault("users", []).append({"username": username, "role": role, "password": password})
+    persist_state()
+    return jsonify({"success": True, "created": True})
+
+
+@app.route("/agents", methods=["GET", "POST"])
+def agents():
+    guard = require_roles("admin", "employee")
+    if guard:
+        return guard
+    if request.method == "GET":
+        return jsonify({"agents": state.get("agents", [])})
+
+    data = request.get_json(silent=True) or {}
+    agent_id = str(data.get("id", "")).strip() or f"agent_{message_id()}"
+    agent = {
+        "id": agent_id,
+        "name": str(data.get("name", "Новый AI-агент")).strip(),
+        "description": str(data.get("description", "")).strip(),
+        "status": str(data.get("status", "draft")).strip(),
+        "created_by": session.get("username", "admin"),
+    }
+    state.setdefault("agents", []).append(agent)
+    persist_state()
+    return jsonify({"success": True, "agent": agent})
+
+
+@app.route("/tasks", methods=["GET", "POST"])
+def tasks():
+    guard = require_roles("admin", "employee")
+    if guard:
+        return guard
+    if request.method == "GET":
+        return jsonify({"tasks": state.get("tasks", [])})
+
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title", "")).strip()
+    if not title:
+        return jsonify({"success": False, "error": "Укажите задачу."})
+    task = {
+        "id": message_id(),
+        "title": title,
+        "status": "open",
+        "owner": session.get("username", "admin"),
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    state.setdefault("tasks", []).append(task)
+    persist_state()
+    return jsonify({"success": True, "task": task})
+
+
+@app.route("/command", methods=["POST"])
+def command():
+    guard = require_roles("admin", "employee")
+    if guard:
+        return guard
+    data = request.get_json(silent=True) or {}
+    text = str(data.get("command", "")).strip()
+    if not text:
+        return jsonify({"success": False, "error": "Команда пустая."})
+
+    stats["commands"] += 1
+    lower = text.lower()
+    if lower.startswith("добавь задачу") or lower.startswith("создай задачу"):
+        title = text.split(" ", 2)[-1].strip()
+        task = {
+            "id": message_id(),
+            "title": title,
+            "status": "open",
+            "owner": session.get("username", "admin"),
+            "created_at": datetime.utcnow().isoformat() + "Z",
+        }
+        state.setdefault("tasks", []).append(task)
+        persist_state()
+        return jsonify({"success": True, "action": "task_created", "task": task})
+
+    if "брифинг" in lower:
+        city = data.get("city", get_env("DEFAULT_WEATHER_CITY", "Kyiv"))
+        return jsonify({"success": True, "action": "briefing_hint", "next": f"/morning_briefing?city={city}"})
+
+    answer = handle_chat({"message": text}, stream=False)
+    return jsonify({"success": True, "action": "chat", "reply": answer})
 
 
 @app.route("/history")
