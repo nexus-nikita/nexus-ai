@@ -1,832 +1,612 @@
-import os
 import base64
-import imaplib
-import smtplib
 import email
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from email.header import decode_header
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, render_template_string, session, redirect
-from openai import OpenAI
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-import chromadb
-from pypdf import PdfReader
-from docx import Document
+import imaplib
 import json
+import os
+import smtplib
+from datetime import datetime, timedelta
+from email.header import decode_header
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
 
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-app = Flask(__name__)
-app.secret_key = "nexus_secret_2026_nikita"
-
-LOGIN_HTML = """<!DOCTYPE html>
-<html><head><title>NEXUS Login</title><meta charset="utf-8">
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#080c14;color:#e8f4f8;font-family:Arial;height:100vh;display:flex;align-items:center;justify-content:center}
-.box{background:#0d1520;border:1px solid rgba(0,212,255,0.15);border-radius:16px;padding:32px;width:320px}
-h1{color:#00d4ff;text-align:center;margin-bottom:24px;letter-spacing:6px}
-input{width:100%;background:#111d2e;border:1px solid rgba(0,212,255,0.15);color:#e8f4f8;padding:12px;border-radius:8px;font-size:15px;outline:none;margin-bottom:12px}
-button{width:100%;background:#00d4ff;color:#000;border:none;padding:12px;border-radius:8px;font-weight:bold;cursor:pointer}
-.err{color:#ff4444;font-size:13px;text-align:center;margin-top:8px}
-</style></head>
-<body><div class="box">
-<h1>NEXUS</h1>
-<form method="post">
-<input type="password" name="password" placeholder="Пароль" autofocus>
-<button type="submit">ВОЙТИ</button>
-</form>
-<div class="err">{{ error }}</div>
-</div></body></html>"""
-history = []
-stats = {"messages": 0, "voice": 0, "emails": 0, "events": 0}
-
-chroma = chromadb.Client()
-collection = chroma.get_or_create_collection("nexus_docs")
+from flask import Flask, jsonify, redirect, render_template_string, request, session
+from openai import OpenAI
 
 try:
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
-        scopes=['https://www.googleapis.com/auth/calendar']
-    )
-    calendar_service = build('calendar', 'v3', credentials=creds)
-    CALENDAR_OK = True
-except:
-    CALENDAR_OK = False
+    import chromadb
+except Exception:
+    chromadb = None
 
-SYSTEM = """Ты NEXUS — центр управления всем. Мощный персональный AI помощник уровня Jarvis.
-Пользователь: Никита.
-Бизнес: общепит, аква бизнес, компания по продвижению бизнеса.
-Локация: Украина.
-Возможности: чат, голос, email, календарь, документы, задачи.
-Всегда отвечай на русском языке. Обращайся по имени Никита.
-Будь конкретным, полезным и мощным помощником."""
+try:
+    from docx import Document
+except Exception:
+    Document = None
+
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+except Exception:
+    service_account = None
+    build = None
+
+try:
+    from pypdf import PdfReader
+except Exception:
+    PdfReader = None
+
+try:
+    from nexus_common import (
+        DEFAULT_PROFILE,
+        build_system_prompt,
+        get_env,
+        get_web_session_secret,
+        require_openai_key,
+        require_web_password,
+    )
+except Exception:
+    DEFAULT_PROFILE = {"name": "Никита", "business": "общепит, аква бизнес, продвижение", "location": "Украина"}
+
+    def get_env(name, default=""):
+        return os.getenv(name, default)
+
+    def require_openai_key():
+        key = get_env("OPENAI_API_KEY", "").strip()
+        if not key:
+            raise RuntimeError("Не задан OPENAI_API_KEY")
+        return key
+
+    def require_web_password():
+        password = get_env("WEB_PASSWORD", "").strip()
+        if not password:
+            raise RuntimeError("Не задан WEB_PASSWORD")
+        return password
+
+    def get_web_session_secret():
+        return get_env("WEB_SESSION_SECRET", "change-me")
+
+    def build_system_prompt(profile=None):
+        profile = profile or DEFAULT_PROFILE
+        return (
+            "Ты NEXUS - приватный AI-помощник и центр управления задачами.\n"
+            f"Пользователь: {profile['name']}.\n"
+            f"Бизнес: {profile['business']}.\n"
+            f"Локация: {profile['location']}.\n"
+            "Отвечай на русском языке, коротко, конкретно и по делу."
+        )
+
+
+BASE_DIR = Path(__file__).resolve().parent
+PROFILE_FILE = BASE_DIR / "nexus_profile.json"
+MEMORY_FILE = BASE_DIR / "nexus_memory.json"
+CRM_FILE = BASE_DIR / "crm_data.json"
+ANALYTICS_FILE = BASE_DIR / "analytics_data.json"
+
+app = Flask(__name__)
+app.secret_key = get_web_session_secret()
+
+
+def read_json(path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def write_json(path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+profile = read_json(PROFILE_FILE, DEFAULT_PROFILE.copy())
+history = read_json(MEMORY_FILE, [])
+stats = {"messages": len([m for m in history if m.get("role") == "user"]), "voice": 0, "emails": 0, "events": 0}
+SYSTEM = build_system_prompt(profile)
+
+
+def require_openai():
+    return OpenAI(api_key=require_openai_key())
+
+
+def init_docs_collection():
+    if chromadb is None:
+        return None
+    try:
+        client = chromadb.Client()
+        return client.get_or_create_collection("nexus_docs")
+    except Exception:
+        return None
+
+
+collection = init_docs_collection()
+
+
+def init_calendar():
+    if service_account is None or build is None:
+        return None
+    service_file = get_env("SERVICE_ACCOUNT_FILE", str(BASE_DIR / "service_account.json"))
+    if not Path(service_file).exists():
+        return None
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            service_file,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+        return build("calendar", "v3", credentials=creds)
+    except Exception:
+        return None
+
+
+calendar_service = init_calendar()
+CALENDAR_ID = get_env("CALENDAR_ID", "primary")
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEXUS - вход</title>
+<style>
+:root{--bg:#071016;--panel:#101b22;--panel2:#14242d;--line:#263b45;--text:#eef7f8;--muted:#8ea3aa;--cyan:#37d7e8;--green:#47e08c}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 20% 10%,#163744 0,#071016 34%,#05090d 100%);font-family:Inter,'Segoe UI',Arial,sans-serif;color:var(--text);padding:24px}
+.shell{width:min(420px,100%);border:1px solid var(--line);background:linear-gradient(180deg,rgba(20,36,45,.96),rgba(9,17,23,.96));border-radius:18px;padding:28px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:24px}.mark{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--cyan),var(--green));display:grid;place-items:center;color:#051014;font-weight:900}.name{font-size:22px;font-weight:900;letter-spacing:5px}.sub{color:var(--muted);font-size:13px;margin-top:3px}
+label{display:block;color:var(--muted);font-size:12px;margin-bottom:8px}input{width:100%;height:46px;border-radius:12px;border:1px solid var(--line);background:#09131a;color:var(--text);padding:0 14px;font-size:15px;outline:none}input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(55,215,232,.14)}
+button{width:100%;height:46px;margin-top:14px;border:0;border-radius:12px;background:linear-gradient(135deg,var(--cyan),var(--green));color:#051014;font-weight:900;cursor:pointer}.error{min-height:20px;color:#ff7b7b;font-size:13px;margin-top:12px}
+</style>
+</head>
+<body>
+<form class="shell" method="post">
+  <div class="brand"><div class="mark">N</div><div><div class="name">NEXUS</div><div class="sub">Центр управления Никиты</div></div></div>
+  <label for="password">Пароль доступа</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" autofocus>
+  <button type="submit">Войти</button>
+  <div class="error">{{ error }}</div>
+</form>
+</body>
+</html>"""
 
 HTML = """<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NEXUS — Центр управления</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEXUS - Центр управления</title>
 <style>
 :root{
-  --bg:#060a12;
-  --bg2:#0a1628;
-  --bg3:#0f1f35;
-  --accent:#00d4ff;
-  --accent2:#0099bb;
-  --green:#00ff88;
-  --red:#ff4444;
-  --orange:#ff9500;
-  --text:#e8f4f8;
-  --text2:#7a9ab8;
-  --border:rgba(0,212,255,0.12);
-  --shadow:0 4px 24px rgba(0,0,0,0.4);
-  --glow:0 0 20px rgba(0,212,255,0.15);
+  --bg:#070d11;--side:#0b151b;--panel:#101c23;--panel2:#14242d;--line:#263b45;
+  --text:#edf7f8;--muted:#8ba1a8;--soft:#c3d1d5;--cyan:#37d7e8;--green:#47e08c;--amber:#f4b860;--red:#ff7474;
+  --shadow:0 22px 60px rgba(0,0,0,.35);--r:14px
 }
-*{margin:0;padding:0;box-sizing:border-box}
-html,body{height:100%;overflow:hidden}
-body{background:var(--bg);color:var(--text);font-family:'Segoe UI',Arial,sans-serif;display:flex;height:100vh}
-
-/* SIDEBAR */
-.sidebar{width:240px;background:linear-gradient(180deg,#0a1628 0%,#060a12 100%);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;box-shadow:4px 0 20px rgba(0,0,0,0.3)}
-.sidebar-logo{padding:20px;border-bottom:1px solid var(--border)}
-.logo{font-size:20px;font-weight:900;color:var(--accent);letter-spacing:6px}
-.logo-sub{font-size:10px;color:var(--text2);margin-top:2px;letter-spacing:2px}
-.sidebar-nav{flex:1;padding:12px 0}
-.nav-item{display:flex;align-items:center;gap:12px;padding:11px 20px;cursor:pointer;color:var(--text2);font-size:14px;transition:all 0.25s;border-left:3px solid transparent;border-radius:0 8px 8px 0;margin:2px 8px 2px 0}
-.nav-item:hover{background:rgba(0,212,255,0.08);color:var(--text);transform:translateX(2px)}
-.nav-item.active{background:linear-gradient(90deg,rgba(0,212,255,0.15),rgba(0,212,255,0.05));color:var(--accent);border-left-color:var(--accent);box-shadow:var(--glow)}
-.nav-icon{font-size:16px;width:20px;text-align:center}
-.sidebar-bottom{padding:16px;border-top:1px solid var(--border)}
-.status-pill{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-
-/* MAIN */
-.main{flex:1;display:flex;flex-direction:column;overflow:hidden}
-.topbar{background:var(--bg2);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.page-title{font-size:16px;font-weight:700;color:var(--text)}
-.topbar-right{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--text2)}
-.content{flex:1;overflow-y:auto;padding:20px}
-.content::-webkit-scrollbar{width:4px}
-.content::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
-
-/* PAGES */
-.page{display:none}
-.page.active{display:block}
-
-/* DASHBOARD */
-.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
-.stat-card{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--border);border-radius:20px;padding:20px;transition:all 0.3s;box-shadow:var(--shadow)}
-.stat-card:hover{transform:translateY(-2px);box-shadow:var(--glow),var(--shadow);border-color:rgba(0,212,255,0.3)}
-.stat-val{font-size:28px;font-weight:900;color:var(--accent);margin-bottom:4px}
-.stat-lab{font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:1px}
-.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-.card{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--border);border-radius:20px;padding:20px;box-shadow:var(--shadow)}
-.card h3{font-size:13px;color:var(--accent);margin-bottom:14px;text-transform:uppercase;letter-spacing:1px}
-
-/* CHAT */
-.chat-layout{display:flex;flex-direction:column;height:calc(100vh - 120px)}
-.chat-messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding-bottom:10px}
-.chat-messages::-webkit-scrollbar{width:4px}
-.chat-messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
-.mw{display:flex;flex-direction:column}
-.mw.user{align-self:flex-end;align-items:flex-end;max-width:75%}
-.mw.nexus{align-self:flex-start;align-items:flex-start;max-width:75%}
-.mn{font-size:11px;color:var(--text2);margin-bottom:3px;font-weight:600}
-.mn.nx{color:var(--accent)}
-.msg{padding:10px 14px;border-radius:14px;line-height:1.6;font-size:14px;word-break:break-word}
-.msg.user{background:#1a3a5c;border-radius:14px 14px 4px 14px}
-.msg.nexus{background:#0a1f1a;border:1px solid var(--border);border-radius:14px 14px 14px 4px}
-.play-btn{margin-top:5px;background:transparent;border:1px solid var(--accent);color:var(--accent);padding:3px 10px;border-radius:20px;font-size:11px;cursor:pointer}
-.typing span{width:6px;height:6px;background:var(--accent);border-radius:50%;display:inline-block;margin:0 2px;animation:bounce 1.2s infinite}
-.typing span:nth-child(2){animation-delay:0.2s}
-.typing span:nth-child(3){animation-delay:0.4s}
-@keyframes bounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-6px)}}
-.chat-input{padding-top:12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end;flex-shrink:0}
-.chat-input textarea{flex:1;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:10px;font-size:14px;outline:none;resize:none;font-family:inherit;max-height:100px}
-.chat-input textarea:focus{border-color:var(--accent)}
-.btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#000;border:none;padding:10px 18px;border-radius:12px;font-weight:bold;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all 0.2s;box-shadow:0 4px 12px rgba(0,212,255,0.3)}
-.btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,212,255,0.4)}
-.btn:active{transform:translateY(0)}
-.btn.mic{background:var(--bg3);border:1px solid var(--border);color:var(--accent);width:40px;height:40px;border-radius:10px;font-size:18px;flex-shrink:0}
-.btn.mic.active{background:var(--red);border-color:var(--red);color:#fff}
-.vbar{display:none;align-items:center;gap:8px;padding:6px 12px;background:rgba(255,68,68,0.1);border-radius:8px;font-size:12px;color:var(--red);margin-bottom:8px}
-.vbar.on{display:flex}
-.wave{display:flex;gap:2px;align-items:center}
-.wave span{width:2px;background:var(--red);border-radius:2px;animation:wv 0.8s infinite}
-.wave span:nth-child(1){height:6px}.wave span:nth-child(2){height:12px;animation-delay:0.1s}.wave span:nth-child(3){height:9px;animation-delay:0.2s}.wave span:nth-child(4){height:15px;animation-delay:0.3s}.wave span:nth-child(5){height:8px;animation-delay:0.4s}
-@keyframes wv{0%,100%{transform:scaleY(1)}50%{transform:scaleY(0.3)}}
-
-/* FORMS */
-input,textarea,select{width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:8px;margin-bottom:10px;font-size:14px;outline:none;font-family:inherit}
-input:focus,textarea:focus{border-color:var(--accent)}
-label{font-size:12px;color:var(--text2);margin-bottom:4px;display:block}
-.btn-full{width:100%}
-
-/* TASKS */
-.task-item{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px}
-.task-check{width:18px;height:18px;border-radius:5px;border:2px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:11px}
-.task-check.done{background:var(--green);border-color:var(--green);color:#000}
-.task-text.done{text-decoration:line-through;color:var(--text2)}
-
-/* EMAIL */
-.email-item{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;cursor:pointer;transition:border 0.2s}
-.email-item:hover{border-color:var(--accent)}
-.email-from{font-size:12px;color:var(--accent);margin-bottom:3px}
-.email-subject{font-size:13px;margin-bottom:3px}
-.email-preview{font-size:11px;color:var(--text2)}
-
-/* CALENDAR */
-.event-item{background:var(--bg3);border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;padding:12px;margin-bottom:8px}
-.event-title{font-size:14px;font-weight:600;margin-bottom:4px}
-.event-time{font-size:12px;color:var(--text2)}
-
-/* STATUS */
-.alert{padding:8px 14px;border-radius:8px;font-size:13px;margin-bottom:12px}
-.alert.ok{background:rgba(0,255,136,0.1);border:1px solid rgba(0,255,136,0.3);color:var(--green)}
-.alert.err{background:rgba(255,68,68,0.1);border:1px solid rgba(255,68,68,0.3);color:var(--red)}
-
-@media(max-width:768px){
-  .sidebar{display:none}
-  .grid4{grid-template-columns:repeat(2,1fr)}
-  .grid2{grid-template-columns:1fr}
-}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,'Segoe UI',Arial,sans-serif;letter-spacing:0}
+button,input,textarea{font:inherit}button{cursor:pointer}
+.app{height:100vh;display:grid;grid-template-columns:256px 1fr;overflow:hidden;background:radial-gradient(circle at 70% -10%,rgba(55,215,232,.16),transparent 38%),var(--bg)}
+.sidebar{background:linear-gradient(180deg,var(--side),#05090c);border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.brand{padding:22px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}.mark{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,var(--cyan),var(--green));display:grid;place-items:center;color:#041115;font-weight:900}.brand-title{font-size:19px;font-weight:900;letter-spacing:5px}.brand-sub{font-size:11px;color:var(--muted);margin-top:3px}
+.nav{padding:12px 10px;display:grid;gap:4px}.nav button{height:42px;border:0;background:transparent;color:var(--muted);border-radius:10px;padding:0 12px;text-align:left;display:flex;align-items:center;gap:10px}.nav button:hover{background:rgba(255,255,255,.04);color:var(--text)}.nav button.active{background:rgba(55,215,232,.12);color:var(--cyan);box-shadow:inset 3px 0 0 var(--cyan)}
+.ico{width:22px;height:22px;display:grid;place-items:center;border-radius:7px;background:#12242d;color:var(--soft);font-size:12px;font-weight:900}.nav button.active .ico{background:rgba(55,215,232,.18);color:var(--cyan)}
+.side-bottom{margin-top:auto;padding:16px 18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}.online{display:flex;align-items:center;gap:8px}.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 16px var(--green)}
+.main{min-width:0;display:flex;flex-direction:column;overflow:hidden}.topbar{height:64px;border-bottom:1px solid var(--line);background:rgba(10,18,24,.78);backdrop-filter:blur(14px);display:flex;align-items:center;justify-content:space-between;padding:0 24px}.title{font-weight:850;font-size:18px}.meta{display:flex;align-items:center;gap:14px;color:var(--muted);font-size:13px}.logout{color:var(--muted);text-decoration:none;border:1px solid var(--line);padding:8px 10px;border-radius:10px}
+.content{overflow:auto;padding:22px;min-height:0}.page{display:none}.page.active{display:block}.stack{display:grid;gap:16px}.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:linear-gradient(180deg,rgba(20,36,45,.92),rgba(13,23,30,.92));border:1px solid var(--line);border-radius:var(--r);padding:18px;box-shadow:var(--shadow)}.card h3{margin:0 0 14px;font-size:13px;color:var(--cyan);text-transform:uppercase;letter-spacing:1px}
+.stat{min-height:116px;display:flex;flex-direction:column;justify-content:space-between}.stat .num{font-size:34px;font-weight:900;color:var(--text)}.stat .lab{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}.stat .hint{font-size:12px;color:var(--soft)}
+.field{width:100%;border:1px solid var(--line);background:#0a141b;color:var(--text);border-radius:11px;min-height:44px;padding:0 13px;outline:none;margin-bottom:10px}.field:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(55,215,232,.12)}textarea.field{padding:12px 13px;resize:vertical;line-height:1.5}
+.btn{border:0;border-radius:11px;min-height:42px;padding:0 15px;background:linear-gradient(135deg,var(--cyan),var(--green));color:#041115;font-weight:900}.btn.secondary{background:#0a141b;color:var(--cyan);border:1px solid var(--line)}.btn.danger{background:var(--red);color:#210808}.row{display:flex;gap:10px;align-items:center}.row .field{margin:0}
+.chatbox{height:calc(100vh - 150px);display:flex;flex-direction:column}.messages{flex:1;overflow:auto;display:flex;flex-direction:column;gap:12px;padding-right:4px}.bubble{max-width:78%;padding:12px 14px;border-radius:14px;line-height:1.55;white-space:pre-wrap;font-size:14px}.bubble.user{align-self:flex-end;background:#183447}.bubble.ai{align-self:flex-start;background:#0f2a24;border:1px solid rgba(71,224,140,.18)}.speaker{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin-bottom:4px}.compose{border-top:1px solid var(--line);padding-top:12px;display:flex;gap:10px}.compose textarea{margin:0;min-height:46px;max-height:120px}
+.list{display:grid;gap:10px}.item{background:#0a141b;border:1px solid var(--line);border-radius:12px;padding:12px}.item-title{font-weight:750;margin-bottom:5px}.item-meta{color:var(--muted);font-size:13px;line-height:1.45}.drop{border:1px dashed #35515d;border-radius:13px;padding:26px;text-align:center;color:var(--muted);background:#0a141b}
+.alert{border-radius:12px;padding:11px 13px;margin-bottom:12px;font-size:13px}.alert.ok{background:rgba(71,224,140,.12);color:var(--green);border:1px solid rgba(71,224,140,.28)}.alert.err{background:rgba(255,116,116,.12);color:var(--red);border:1px solid rgba(255,116,116,.28)}
+@media(max-width:900px){.app{grid-template-columns:1fr}.sidebar{display:none}.grid4,.grid2{grid-template-columns:1fr}.content{padding:14px}.topbar{padding:0 14px}.chatbox{height:calc(100vh - 120px)}.bubble{max-width:92%}}
 </style>
 </head>
 <body>
-
-<div class="sidebar">
-  <div class="sidebar-logo">
-    <div class="logo">⚡ NEXUS</div>
-    <div class="logo-sub">ЦЕНТР УПРАВЛЕНИЯ</div>
-  </div>
-  <div class="sidebar-nav">
-    <div class="nav-item active" onclick="showPage('dashboard',this)"><span class="nav-icon">📊</span>Dashboard</div>
-    <div class="nav-item" onclick="showPage('chat',this)"><span class="nav-icon">💬</span>Чат с NEXUS</div>
-    <div class="nav-item" onclick="showPage('email',this)"><span class="nav-icon">📧</span>Email</div>
-    <div class="nav-item" onclick="showPage('calendar',this)"><span class="nav-icon">📅</span>Календарь</div>
-    <div class="nav-item" onclick="showPage('docs',this)"><span class="nav-icon">📁</span>Документы</div>
-    <div class="nav-item" onclick="showPage('tasks',this)"><span class="nav-icon">✅</span>Задачи</div>
-    <div class="nav-item" onclick="showPage('analytics_page',this)"><span class="nav-icon">📊</span>Analytics</div>
-    <div class="nav-item" onclick="showPage('crm_page',this)"><span class="nav-icon">👥</span>CRM</div>
-    <div class="nav-item" onclick="showPage('search',this)"><span class="nav-icon">🔍</span>Search</div>
-    <div class="nav-item" onclick="window.open('http://127.0.0.1:5010','_blank')"><span class="nav-icon">👤</span>Users</div>
-
-
-
-
-
-
-
-
-
-
-
-
-  </div>
-  <div class="sidebar-bottom">
-    <div class="status-pill"><div class="dot"></div>Никита — онлайн</div>
-  </div>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="mark">N</div><div><div class="brand-title">NEXUS</div><div class="brand-sub">ЦЕНТР УПРАВЛЕНИЯ</div></div></div>
+    <nav class="nav">
+      <button class="active" data-page="dashboard"><span class="ico">D</span>Dashboard</button>
+      <button data-page="chat"><span class="ico">AI</span>Чат NEXUS</button>
+      <button data-page="email"><span class="ico">@</span>Email</button>
+      <button data-page="calendar"><span class="ico">C</span>Календарь</button>
+      <button data-page="docs"><span class="ico">F</span>Документы</button>
+      <button data-page="tasks"><span class="ico">T</span>Задачи</button>
+      <button data-page="search"><span class="ico">S</span>Поиск</button>
+    </nav>
+    <div class="side-bottom"><div class="online"><span class="dot"></span>Никита онлайн</div></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div class="title" id="pageTitle">Dashboard</div><div class="meta"><span id="clock"></span><span>{{ email }}</span><a class="logout" href="/logout">Выйти</a></div></header>
+    <section class="content">
+      <div id="alert"></div>
+      <div class="page active" id="dashboard">
+        <div class="stack">
+          <div class="grid4">
+            <div class="card stat"><div class="num" id="sMessages">0</div><div><div class="lab">Сообщений</div><div class="hint">AI диалоги</div></div></div>
+            <div class="card stat"><div class="num" id="sVoice">0</div><div><div class="lab">Голосовых</div><div class="hint">Ввод голосом</div></div></div>
+            <div class="card stat"><div class="num" id="sEmails">0</div><div><div class="lab">Писем</div><div class="hint">Последняя загрузка</div></div></div>
+            <div class="card stat"><div class="num" id="sEvents">0</div><div><div class="lab">Событий</div><div class="hint">Ближайший календарь</div></div></div>
+          </div>
+          <div class="grid2">
+            <div class="card"><h3>Быстрый запрос</h3><div class="row"><input class="field" id="quickInput" placeholder="Спроси NEXUS..." onkeydown="if(event.key==='Enter')quickAsk()"><button class="btn" onclick="quickAsk()">Спросить</button></div><div id="quickResult" class="item-meta"></div></div>
+            <div class="card"><h3>Ближайшие события</h3><div id="dashEvents" class="list"><div class="item-meta">Загрузка...</div></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="page" id="chat">
+        <div class="card chatbox">
+          <div class="messages" id="messages"><div class="speaker">NEXUS</div><div class="bubble ai">Привет, Никита. Центр управления активен. Что делаем?</div></div>
+          <div class="compose"><button class="btn secondary" id="micBtn" onclick="toggleVoice()">Микрофон</button><textarea class="field" id="chatInput" placeholder="Напишите сообщение..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg(false)}"></textarea><button class="btn" onclick="sendMsg(false)">Отправить</button></div>
+        </div>
+      </div>
+      <div class="page" id="email">
+        <div class="stack"><div class="card"><div class="row" style="justify-content:space-between"><h3>Email центр</h3><button class="btn secondary" onclick="loadEmails()">Обновить</button></div><div id="emailList" class="list"><div class="item-meta">Нажмите обновить, чтобы загрузить письма.</div></div></div><div class="card"><h3>Новое письмо</h3><input class="field" id="emailTo" placeholder="Кому"><input class="field" id="emailSubject" placeholder="Тема"><textarea class="field" id="emailBody" rows="5" placeholder="Текст письма"></textarea><div class="row"><button class="btn" onclick="sendEmail()">Отправить</button><button class="btn secondary" onclick="aiWriteEmail()">AI черновик</button></div></div></div>
+      </div>
+      <div class="page" id="calendar">
+        <div class="grid2"><div class="card"><h3>Новое событие</h3><input class="field" id="eventTitle" placeholder="Название"><div class="row"><input class="field" id="eventDate" type="date"><input class="field" id="eventTime" type="time"></div><button class="btn" onclick="addEvent()">Добавить</button></div><div class="card"><h3>Календарь</h3><div id="calEvents" class="list"></div></div></div>
+      </div>
+      <div class="page" id="docs">
+        <div class="grid2"><div class="card"><h3>Документы</h3><div class="drop" onclick="document.getElementById('docFile').click()">Загрузить PDF, DOCX или TXT</div><input id="docFile" type="file" accept=".pdf,.docx,.txt" style="display:none" onchange="uploadDoc(this)"><div id="docStatus"></div><div id="docList" class="list"></div></div><div class="card"><h3>Вопрос по документам</h3><input class="field" id="docQuestion" placeholder="Что найти или объяснить?" onkeydown="if(event.key==='Enter')askDocs()"><button class="btn" onclick="askDocs()">Спросить</button><div id="docAnswer" class="item-meta" style="margin-top:12px"></div></div></div>
+      </div>
+      <div class="page" id="tasks">
+        <div class="card"><h3>Задачи</h3><div class="row"><input class="field" id="taskInput" placeholder="Новая задача" onkeydown="if(event.key==='Enter')addTask()"><button class="btn" onclick="addTask()">Добавить</button></div><div id="taskList" class="list"></div></div>
+      </div>
+      <div class="page" id="search">
+        <div class="card"><h3>Поиск по системе</h3><div class="row"><input class="field" id="searchInput" placeholder="Клиенты, заметки, аналитика..." onkeydown="if(event.key==='Enter')doSearch()"><button class="btn" onclick="doSearch()">Найти</button></div><div id="searchResults" class="list"></div></div>
+      </div>
+    </section>
+  </main>
 </div>
-
-<div class="main">
-  <div class="topbar">
-    <div class="page-title" id="page-title">📊 Dashboard</div>
-    <div class="topbar-right">
-      <span id="current-time"></span>
-      <span>photobusines63@gmail.com</span>
-    </div>
-  </div>
-
-  <div class="content">
-    <div id="alert-bar"></div>
-
-    <!-- DASHBOARD -->
-    <div class="page active" id="page-dashboard">
-      <div class="grid4">
-        <div class="stat-card"><div class="stat-val" id="s-msg">0</div><div class="stat-lab">Сообщений</div></div>
-        <div class="stat-card"><div class="stat-val" id="s-voice">0</div><div class="stat-lab">Голосовых</div></div>
-        <div class="stat-card"><div class="stat-val" id="s-email">0</div><div class="stat-lab">Писем</div></div>
-        <div class="stat-card"><div class="stat-val" id="s-events">0</div><div class="stat-lab">Событий</div></div>
-      </div>
-      <div class="grid2">
-        <div class="card">
-          <h3>🤖 Быстрый чат</h3>
-          <input id="quick-inp" placeholder="Спроси NEXUS..." onkeydown="if(event.key==='Enter')quickAsk()">
-          <button class="btn btn-full" onclick="quickAsk()">Спросить</button>
-          <div id="quick-result" style="margin-top:10px;font-size:13px;color:var(--text2)"></div>
-        </div>
-        <div class="card">
-          <h3>📅 Ближайшие события</h3>
-          <div id="dash-events"><div style="color:var(--text2);font-size:13px">Загрузка...</div></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- CHAT -->
-    <div class="page" id="page-chat">
-      <div class="chat-layout">
-        <div class="vbar" id="vbar"><div class="wave"><span></span><span></span><span></span><span></span><span></span></div>Слушаю...</div>
-        <div class="chat-messages" id="chat">
-          <div class="mw nexus"><div class="mn nx">NEXUS</div><div class="msg nexus">Привет, Никита! Центр управления активен. Чем могу помочь?</div></div>
-        </div>
-        <div class="chat-input">
-          <button class="btn mic" id="micBtn" onclick="toggleVoice()">🎤</button>
-          <textarea id="inp" placeholder="Напишите сообщение..." rows="1"
-            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMsg(false)}"
-            oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
-          <button class="btn" onclick="sendMsg(false)">➤</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- EMAIL -->
-    <div class="page" id="page-email">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <div style="font-size:16px;font-weight:700">📧 Входящие письма</div>
-        <button class="btn" onclick="loadEmails()">🔄 Обновить</button>
-      </div>
-      <div id="email-list"><div style="color:var(--text2);font-size:13px">Нажмите обновить для загрузки писем</div></div>
-      <div id="email-detail"></div>
-      <div class="card" style="margin-top:16px">
-        <h3>✏️ Написать письмо</h3>
-        <input id="email-to" placeholder="Кому">
-        <input id="email-subject" placeholder="Тема">
-        <textarea id="email-body" placeholder="Текст письма..." rows="4"></textarea>
-        <div style="display:flex;gap:8px">
-          <button class="btn" onclick="sendEmail()">📤 Отправить</button>
-          <button class="btn" style="background:var(--bg3);color:var(--accent);border:1px solid var(--accent)" onclick="aiWriteEmail()">🤖 AI письмо</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- CALENDAR -->
-    <div class="page" id="page-calendar">
-      <div class="card" style="margin-bottom:16px">
-        <h3>➕ Добавить событие</h3>
-        <input id="cal-title" placeholder="Название события">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-          <input id="cal-date" type="date">
-          <input id="cal-time" type="time">
-        </div>
-        <button class="btn btn-full" onclick="addEvent()">+ Добавить</button>
-      </div>
-      <div class="card">
-        <h3>📋 Ближайшие события</h3>
-        <div id="cal-events"><div style="color:var(--text2);font-size:13px">Загрузка...</div></div>
-      </div>
-    </div>
-
-    <!-- DOCS -->
-    <div class="page" id="page-docs">
-      <div class="card" style="margin-bottom:16px">
-        <h3>📁 Загрузить документ</h3>
-        <div style="border:2px dashed var(--border);border-radius:10px;padding:24px;text-align:center;cursor:pointer" onclick="document.getElementById('docFile').click()">
-          <div style="font-size:32px">📄</div>
-          <div style="font-size:13px;color:var(--text2);margin-top:8px">PDF, Word, TXT</div>
-        </div>
-        <input type="file" id="docFile" accept=".pdf,.docx,.txt" style="display:none" onchange="uploadDoc(this)">
-        <div id="doc-status" style="margin-top:10px"></div>
-        <div id="doc-list" style="margin-top:12px"></div>
-      </div>
-      <div class="card">
-        <h3>🔍 Спроси по документам</h3>
-        <input id="doc-q" placeholder="Задай вопрос по загруженным документам..." onkeydown="if(event.key==='Enter')askDocs()">
-        <button class="btn btn-full" onclick="askDocs()">Спросить</button>
-        <div id="doc-answer" style="margin-top:12px;font-size:14px;line-height:1.6"></div>
-      </div>
-    </div>
-
-    <!-- TASKS -->
-    <div class="page" id="page-tasks">
-      <div class="card" style="margin-bottom:16px">
-        <h3>➕ Новая задача</h3>
-        <div style="display:flex;gap:8px">
-          <input id="task-inp" placeholder="Введите задачу..." onkeydown="if(event.key==='Enter')addTask()" style="margin:0">
-          <button class="btn" onclick="addTask()">+</button>
-        </div>
-      </div>
-      <div id="task-list"></div>
-    </div>
-
-
-    <!-- SEARCH -->
-    <div class="page" id="page-search">
-      <div class="card">
-        <h3>Поиск по системе</h3>
-        <div style="display:flex;gap:8px;margin-bottom:16px">
-          <input id="sq" placeholder="Поиск клиентов, записей..." onkeydown="if(event.key==='Enter')doSearch()" style="margin:0">
-          <button class="btn" onclick="doSearch()">Найти</button>
-        </div>
-        <div id="sr"></div>
-      </div>
-    </div>
-
-  </div>
-</div>
-
 <script>
-var isListening=false,recognition=null,curAudio=null,audioStore={},audioIdx=0,tasks=[],docs=[];
-
-function showPage(name,el){
-  document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});
-  document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active')});
-  document.getElementById('page-'+name).classList.add('active');
-  el.classList.add('active');
-  var titles={'dashboard':'📊 Dashboard','chat':'💬 Чат с NEXUS','email':'📧 Email','calendar':'📅 Календарь','docs':'📁 Документы','tasks':'✅ Задачи'};
-  document.getElementById('page-title').textContent=titles[name]||name;
-  if(name==='email')loadEmails();
-  if(name==='calendar')loadEvents();
-}
-
-function showAlert(msg,ok){
-  var b=document.getElementById('alert-bar');
-  b.className='alert '+(ok?'ok':'err');
-  b.textContent=msg;
-  setTimeout(function(){b.textContent='';b.className=''},4000);
-}
-
-function updateTime(){
-  document.getElementById('current-time').textContent=new Date().toLocaleTimeString('ru-RU');
-}
-setInterval(updateTime,1000);
-updateTime();
-
-function updateStats(){
-  fetch('/stats').then(function(r){return r.json()}).then(function(d){
-    document.getElementById('s-msg').textContent=d.messages||0;
-    document.getElementById('s-voice').textContent=d.voice||0;
-    document.getElementById('s-email').textContent=d.emails||0;
-    document.getElementById('s-events').textContent=d.events||0;
-  });
-}
-updateStats();
-,30000);
-
-function escHtml(t){var d=document.createElement('div');d.textContent=t;return d.innerHTML}
-function scrollBottom(){var c=document.getElementById('chat');c.scrollTop=c.scrollHeight}
-
-function toggleVoice(){
-  if(!window.SpeechRecognition&&!window.webkitSpeechRecognition){alert('Используйте Chrome!');return}
-  if(isListening){recognition.stop();return}
-  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  recognition=new SR();recognition.lang='ru-RU';
-  recognition.onstart=function(){isListening=true;document.getElementById('micBtn').classList.add('active');document.getElementById('micBtn').textContent='⏹';document.getElementById('vbar').classList.add('on')};
-  recognitisetInterval(updateStatson.onresult=function(e){document.getElementById('inp').value=e.results[0][0].transcript;sendMsg(true)};
-  recognition.onend=function(){isListening=false;document.getElementById('micBtn').classList.remove('active');document.getElementById('micBtn').textContent='🎤';document.getElementById('vbar').classList.remove('on')};
-  recognition.start();
-}
-
-function sendMsg(voice){
-  var inp=document.getElementById('inp');
-  var text=inp.value.trim();if(!text)return;
-  inp.value='';inp.style.height='auto';
-  var chat=document.getElementById('chat');
-  var ud=document.createElement('div');ud.className='mw user';
-  ud.innerHTML='<div class="mn">Никита</div><div class="msg user">'+escHtml(text)+'</div>';
-  chat.appendChild(ud);scrollBottom();
-  var td=document.createElement('div');td.className='mw nexus';td.id='typing';
-  td.innerHTML='<div class="mn nx">NEXUS</div><div class="msg nexus"><span class="typing"><span></span><span></span><span></span></span></div>';
-  chat.appendChild(td);scrollBottom();
-  fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,voice:voice})})
-  .then(function(r){return r.json()})
-  .then(function(d){
-    var t=document.getElementById('typing');if(t)t.remove();
-    var nd=document.createElement('div');nd.className='mw nexus';
-    var html='<div class="mn nx">NEXUS</div><div class="msg nexus">'+escHtml(d.reply)+'</div>';
-    if(d.audio){var idx=audioIdx++;audioStore[idx]=d.audio;
-      if(voice){curAudio=new Audio('data:audio/mp3;base64,'+d.audio);curAudio.play().catch(function(){})}
-      else{html+='<button class="play-btn" onclick="playAudio('+idx+')">🔊 Слушать</button>'}}
-    nd.innerHTML=html;chat.appendChild(nd);scrollBottom();updateStats();
-  }).catch(function(){var t=document.getElementById('typing');if(t)t.remove()});
-}
-
-function playAudio(idx){if(curAudio)curAudio.pause();curAudio=new Audio('data:audio/mp3;base64,'+audioStore[idx]);curAudio.play()}
-
-function quickAsk(){
-  var inp=document.getElementById('quick-inp');
-  var text=inp.value.trim();if(!text)return;
-  inp.value='';
-  document.getElementById('quick-result').textContent='⏳ Думаю...';
-  fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,voice:false})})
-  .then(function(r){return r.json()})
-  .then(function(d){document.getElementById('quick-result').textContent=d.reply});
-}
-
-function loadEmails(){
-  document.getElementById('email-list').innerHTML='<div style="color:var(--text2);font-size:13px">⏳ Загружаю...</div>';
-  fetch('/emails').then(function(r){return r.json()}).then(function(d){
-    stats_emails=d.emails?d.emails.length:0;
-    if(!d.emails||d.emails.length===0){document.getElementById('email-list').innerHTML='<div style="color:var(--text2)">Нет писем</div>';return}
-    var html='';
-    d.emails.forEach(function(e,i){
-      html+='<div class="email-item" onclick="showEmail('+i+','+JSON.stringify(d.emails).replace(/"/g,'&quot;')+')">';
-      html+='<div class="email-from">✉️ '+escHtml(e.from)+'</div>';
-      html+='<div class="email-subject">'+escHtml(e.subject)+'</div>';
-      html+='<div class="email-preview">'+escHtml(e.preview)+'</div>';
-      html+='</div>';
-    });
-    document.getElementById('email-list').innerHTML=html;
-  });
-}
-
-var emailsCache=[];
-function showEmail(idx,emails){
-  emailsCache=emails||emailsCache;
-  var e=emailsCache[idx];if(!e)return;
-  var html='<div class="card" style="margin-top:12px">';
-  html+='<h3>'+escHtml(e.subject)+'</h3>';
-  html+='<p style="color:var(--text2);font-size:12px;margin-bottom:10px">От: '+escHtml(e.from)+'</p>';
-  html+='<div style="background:var(--bg3);border-radius:8px;padding:12px;font-size:13px;line-height:1.6;white-space:pre-wrap">'+escHtml(e.body)+'</div>';
-  html+='<div style="margin-top:10px;background:#0a1f1a;border:1px solid var(--border);border-radius:8px;padding:10px"><div style="font-size:11px;color:var(--accent);margin-bottom:6px">🤖 AI АНАЛИЗ</div><div id="ai-res">Анализирую...</div></div>';
-  html+='</div>';
-  document.getElementById('email-detail').innerHTML=html;
-  fetch('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:e.body,subject:e.subject})})
-  .then(function(r){return r.json()})
-  .then(function(d){var el=document.getElementById('ai-res');if(el)el.textContent=d.analysis});
-}
-
-function sendEmail(){
-  var to=document.getElementById('email-to').value;
-  var subject=document.getElementById('email-subject').value;
-  var body=document.getElementById('email-body').value;
-  if(!to||!subject||!body){showAlert('Заполните все поля!',false);return}
-  fetch('/send_email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:to,subject:subject,body:body})})
-  .then(function(r){return r.json()})
-  .then(function(d){
-    if(d.success){showAlert('Письмо отправлено!',true);document.getElementById('email-to').value='';document.getElementById('email-subject').value='';document.getElementById('email-body').value=''}
-    else showAlert('Ошибка: '+d.error,false)
-  });
-}
-
-function aiWriteEmail(){
-  var prompt=prompt('Опиши что написать:');
-  if(!prompt)return;
-  fetch('/generate_email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:prompt})})
-  .then(function(r){return r.json()})
-  .then(function(d){
-    document.getElementById('email-subject').value=d.subject||'';
-    document.getElementById('email-body').value=d.body||'';
-    showAlert('Письмо сгенерировано!',true);
-  });
-}
-
-function loadEvents(){
-  fetch('/events').then(function(r){return r.json()}).then(function(d){
-    var html='';
-    if(!d.events||d.events.length===0){html='<div style="color:var(--text2);font-size:13px">Нет событий</div>'}
-    else{d.events.forEach(function(e){html+='<div class="event-item"><div class="event-title">'+escHtml(e.title)+'</div><div class="event-time">'+escHtml(e.time)+'</div></div>'})}
-    document.getElementById('cal-events').innerHTML=html;
-    document.getElementById('dash-events').innerHTML=html;
-  });
-}
-loadEvents();
-
-function addEvent(){
-  var title=document.getElementById('cal-title').value;
-  var date=document.getElementById('cal-date').value;
-  var time=document.getElementById('cal-time').value;
-  if(!title||!date||!time){showAlert('Заполните все поля!',false);return}
-  fetch('/add_event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,date:date,time:time})})
-  .then(function(r){return r.json()})
-  .then(function(d){
-    if(d.success){showAlert('Событие добавлено!',true);document.getElementById('cal-title').value='';loadEvents()}
-    else showAlert('Ошибка: '+d.error,false)
-  });
-}
-
-function uploadDoc(input){
-  var file=input.files[0];if(!file)return;
-  var fd=new FormData();fd.append('file',file);
-  document.getElementById('doc-status').innerHTML='<div class="alert ok">⏳ Загружаю...</div>';
-  fetch('/upload_doc',{method:'POST',body:fd})
-  .then(function(r){return r.json()})
-  .then(function(d){
-    if(d.success){docs.push(file.name);document.getElementById('doc-status').innerHTML='<div class="alert ok">✅ Загружено: '+file.name+'</div>';
-      document.getElementById('doc-list').innerHTML=docs.map(function(n){return'<div style="background:var(--bg3);border-radius:8px;padding:8px 12px;margin-bottom:6px;font-size:13px">📄 '+n+'</div>'}).join('')}
-    else document.getElementById('doc-status').innerHTML='<div class="alert err">Ошибка: '+d.error+'</div>'
-  });
-}
-
-function askDocs(){
-  var q=document.getElementById('doc-q').value.trim();if(!q)return;
-  document.getElementById('doc-answer').textContent='⏳ Думаю...';
-  fetch('/ask_docs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})})
-  .then(function(r){return r.json()})
-  .then(function(d){document.getElementById('doc-answer').textContent=d.answer});
-}
-
-function addTask(){
-  var inp=document.getElementById('task-inp');
-  var text=inp.value.trim();if(!text)return;
-  inp.value='';
-  tasks.push({text:text,done:false});
-  renderTasks();
-}
-
-function toggleTask(idx){tasks[idx].done=!tasks[idx].done;renderTasks()}
-
-function renderTasks(){
-  var html='';
-  tasks.forEach(function(t,i){
-    html+='<div class="task-item">';
-    html+='<div class="task-check '+(t.done?'done':'')+'" onclick="toggleTask('+i+')">'+(t.done?'✓':'')+'</div>';
-    html+='<div class="task-text '+(t.done?'done':'')+'">'+escHtml(t.text)+'</div>';
-    html+='</div>';
-  });
-  document.getElementById('task-list').innerHTML=html||'<div style="color:var(--text2);font-size:13px;text-align:center;padding:20px">Нет задач</div>';
-}
-renderTasks();
-
-function doSearch(){
-  var q=document.getElementById('sq').value.trim();
-  if(!q)return;
-  document.getElementById('sr').innerHTML='Ищу...';
-  fetch('/search?q='+encodeURIComponent(q))
-  .then(function(r){return r.json()})
-  .then(function(d){
-    if(!d.results.length){document.getElementById('sr').innerHTML='<p style="color:var(--text2)">Ничего не найдено</p>';return}
-    var html='<p style="color:var(--text2);margin-bottom:12px">Найдено: '+d.results.length+'</p>';
-    d.results.forEach(function(r){html+='<div class="card" style="margin-bottom:8px"><div style="font-size:11px;color:var(--accent)">'+r.type+'</div><div style="font-weight:bold">'+r.title+'</div><div style="font-size:13px;color:var(--text2)">'+r.info+'</div></div>'});
-    document.getElementById('sr').innerHTML=html;
-  });
-}
-
+var tasks=JSON.parse(localStorage.getItem('nexusTasks')||'[]'),docs=[],recognition=null,isListening=false,audioStore={},audioIndex=0,currentAudio=null;
+var titles={dashboard:'Dashboard',chat:'Чат NEXUS',email:'Email центр',calendar:'Календарь',docs:'Документы',tasks:'Задачи',search:'Поиск'};
+function $(id){return document.getElementById(id)}function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML}
+document.querySelectorAll('.nav button').forEach(function(b){b.onclick=function(){document.querySelectorAll('.nav button').forEach(function(x){x.classList.remove('active')});document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});b.classList.add('active');$(b.dataset.page).classList.add('active');$('pageTitle').textContent=titles[b.dataset.page]||'NEXUS'}});
+function alertMsg(text,ok){$('alert').innerHTML='<div class="alert '+(ok?'ok':'err')+'">'+esc(text)+'</div>';setTimeout(function(){$('alert').innerHTML=''},4200)}
+function updateClock(){$('clock').textContent=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}setInterval(updateClock,1000);updateClock();
+function api(url,opts){return fetch(url,opts).then(function(r){return r.text().then(function(t){try{return JSON.parse(t)}catch(e){throw new Error('Сервер вернул не JSON для '+url)}})})}
+function loadStats(){api('/stats').then(function(d){$('sMessages').textContent=d.messages||0;$('sVoice').textContent=d.voice||0;$('sEmails').textContent=d.emails||0;$('sEvents').textContent=d.events||0}).catch(function(){})}
+function addBubble(who,text){var wrap=document.createElement('div');wrap.className='bubble '+(who==='user'?'user':'ai');wrap.textContent=text;var msg=$('messages');if(who!=='user'){var s=document.createElement('div');s.className='speaker';s.textContent='NEXUS';msg.appendChild(s)}msg.appendChild(wrap);msg.scrollTop=msg.scrollHeight;return wrap}
+function sendMsg(voice){var inp=$('chatInput'),text=inp.value.trim();if(!text)return;inp.value='';addBubble('user',text);var pending=addBubble('ai','Думаю...');api('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,voice:voice})}).then(function(d){pending.textContent=d.reply||'';if(d.audio){var a=new Audio('data:audio/mp3;base64,'+d.audio);if(voice)a.play().catch(function(){})}loadStats()}).catch(function(e){pending.textContent=e.message})}
+function quickAsk(){var inp=$('quickInput'),text=inp.value.trim();if(!text)return;inp.value='';$('quickResult').textContent='Думаю...';api('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,voice:false})}).then(function(d){$('quickResult').textContent=d.reply||'';loadStats()}).catch(function(e){$('quickResult').textContent=e.message})}
+function toggleVoice(){if(!window.SpeechRecognition&&!window.webkitSpeechRecognition){alertMsg('Голосовой ввод работает в Chrome.',false);return}if(isListening&&recognition){recognition.stop();return}var SR=window.SpeechRecognition||window.webkitSpeechRecognition;recognition=new SR();recognition.lang='ru-RU';recognition.onstart=function(){isListening=true;$('micBtn').textContent='Стоп'};recognition.onend=function(){isListening=false;$('micBtn').textContent='Микрофон'};recognition.onerror=recognition.onend;recognition.onresult=function(e){$('chatInput').value=e.results[0][0].transcript;sendMsg(true)};recognition.start()}
+function loadEvents(){api('/events').then(function(d){var html=(d.events||[]).map(function(e){return '<div class="item"><div class="item-title">'+esc(e.title)+'</div><div class="item-meta">'+esc(e.time)+'</div></div>'}).join('')||'<div class="item-meta">Нет событий</div>';$('calEvents').innerHTML=html;$('dashEvents').innerHTML=html;loadStats()}).catch(function(e){$('dashEvents').innerHTML='<div class="item-meta">'+esc(e.message)+'</div>'})}
+function addEvent(){var title=$('eventTitle').value,date=$('eventDate').value,time=$('eventTime').value;if(!title||!date||!time){alertMsg('Заполните название, дату и время.',false);return}api('/add_event',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,date:date,time:time})}).then(function(d){if(d.success){alertMsg('Событие добавлено.',true);$('eventTitle').value='';loadEvents()}else alertMsg(d.error||'Ошибка календаря',false)})}
+function loadEmails(){$('emailList').innerHTML='<div class="item-meta">Загружаю...</div>';api('/emails').then(function(d){var emails=d.emails||[];$('emailList').innerHTML=emails.map(function(e,i){return '<div class="item" onclick="analyzeEmail('+i+')"><div class="item-title">'+esc(e.subject)+'</div><div class="item-meta">'+esc(e.from)+'<br>'+esc(e.preview)+'</div></div>'}).join('')||'<div class="item-meta">'+esc(d.error||'Писем нет')+'</div>';window.emailCache=emails;loadStats()})}
+function analyzeEmail(i){var e=(window.emailCache||[])[i];if(!e)return;api('/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:e.subject,text:e.body})}).then(function(d){alertMsg(d.analysis||'Готово',true)})}
+function sendEmail(){var to=$('emailTo').value,subject=$('emailSubject').value,body=$('emailBody').value;if(!to||!subject||!body){alertMsg('Заполните все поля письма.',false);return}api('/send_email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({to:to,subject:subject,body:body})}).then(function(d){alertMsg(d.success?'Письмо отправлено.':d.error,false)})}
+function aiWriteEmail(){var p=prompt('Что нужно написать?');if(!p)return;api('/generate_email',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt:p})}).then(function(d){$('emailSubject').value=d.subject||'';$('emailBody').value=d.body||''})}
+function uploadDoc(input){var f=input.files[0];if(!f)return;var fd=new FormData();fd.append('file',f);$('docStatus').innerHTML='<div class="alert ok">Загружаю...</div>';api('/upload_doc',{method:'POST',body:fd}).then(function(d){if(d.success){docs.push(f.name);$('docStatus').innerHTML='<div class="alert ok">Документ загружен.</div>';$('docList').innerHTML=docs.map(function(x){return'<div class="item">'+esc(x)+'</div>'}).join('')}else $('docStatus').innerHTML='<div class="alert err">'+esc(d.error)+'</div>'})}
+function askDocs(){var q=$('docQuestion').value.trim();if(!q)return;$('docAnswer').textContent='Думаю...';api('/ask_docs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})}).then(function(d){$('docAnswer').textContent=d.answer||''})}
+function addTask(){var t=$('taskInput').value.trim();if(!t)return;$('taskInput').value='';tasks.push({text:t,done:false});renderTasks()}function toggleTask(i){tasks[i].done=!tasks[i].done;renderTasks()}function renderTasks(){localStorage.setItem('nexusTasks',JSON.stringify(tasks));$('taskList').innerHTML=tasks.map(function(t,i){return'<div class="item" onclick="toggleTask('+i+')"><div class="item-title" style="'+(t.done?'text-decoration:line-through;color:var(--muted)':'')+'">'+esc(t.text)+'</div></div>'}).join('')||'<div class="item-meta">Задач нет</div>'}renderTasks();
+function doSearch(){var q=$('searchInput').value.trim();if(!q)return;$('searchResults').innerHTML='<div class="item-meta">Ищу...</div>';api('/search?q='+encodeURIComponent(q)).then(function(d){$('searchResults').innerHTML=(d.results||[]).map(function(r){return'<div class="item"><div class="item-title">'+esc(r.title)+'</div><div class="item-meta">'+esc(r.type)+'<br>'+esc(r.info)+'</div></div>'}).join('')||'<div class="item-meta">Ничего не найдено</div>'})}
+loadStats();loadEvents();setInterval(loadStats,8000);
 </script>
 </body>
 </html>"""
 
-@app.route('/')
+
+def require_login():
+    return session.get("logged_in") is True
+
+
+@app.route("/")
 def index():
-    if not session.get('logged_in'):
-        return redirect('/login')
-    return render_template_string(HTML)
+    if not require_login():
+        return redirect("/login")
+    return render_template_string(HTML, email=get_env("GMAIL", "photobusines63@gmail.com"))
 
-@app.route('/login', methods=['GET', 'POST'])
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == 'POST':
-        if request.form.get('password') == 'nexus2026':
-            session['logged_in'] = True
-            return redirect('/')
-        return render_template_string(LOGIN_HTML, error='Неверный пароль')
-    return render_template_string(LOGIN_HTML, error='')
+    error = ""
+    if request.method == "POST":
+        if request.form.get("password", "") == require_web_password():
+            session["logged_in"] = True
+            return redirect("/")
+        error = "Неверный пароль"
+    return render_template_string(LOGIN_HTML, error=error)
 
-@app.route('/logout')
+
+@app.route("/logout")
 def logout():
     session.clear()
-    return redirect('/login')
+    return redirect("/login")
+
+
+@app.route("/stats")
 def get_stats():
     return jsonify(stats)
 
-@app.route('/chat', methods=['POST'])
+
+@app.route("/chat", methods=["POST"])
 def chat():
-    data = request.json
-    msg = data.get('message', '').strip()
-    voice = data.get('voice', False)
+    data = request.get_json(silent=True) or {}
+    msg = data.get("message", "").strip()
+    voice = bool(data.get("voice", False))
     if not msg:
         return jsonify({"reply": "Напишите сообщение."})
+
     stats["messages"] += 1
     if voice:
         stats["voice"] += 1
     history.append({"role": "user", "content": msg})
+
     try:
+        client = require_openai()
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": SYSTEM}, *history[-20:]]
+            model=get_env("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "system", "content": SYSTEM}, *history[-20:]],
         )
         answer = response.choices[0].message.content
     except Exception as exc:
-        return jsonify({"reply": "Ошибка: " + str(exc)})
+        answer = "Ошибка AI: " + str(exc)
+
     history.append({"role": "assistant", "content": answer})
-    audio_b64 = None
     try:
-        audio_response = client.audio.speech.create(model="tts-1", voice="onyx", input=answer)
-        audio_b64 = base64.b64encode(audio_response.content).decode()
-    except:
+        write_json(MEMORY_FILE, history[-80:])
+    except Exception:
         pass
+
+    audio_b64 = None
+    if voice:
+        try:
+            client = require_openai()
+            audio_response = client.audio.speech.create(
+                model=get_env("OPENAI_TTS_MODEL", "tts-1"),
+                voice=get_env("OPENAI_TTS_VOICE", "onyx"),
+                input=answer[:4000],
+            )
+            audio_b64 = base64.b64encode(audio_response.content).decode("ascii")
+        except Exception:
+            audio_b64 = None
     return jsonify({"reply": answer, "audio": audio_b64})
 
-@app.route('/emails')
+
+def decode_mime(value):
+    output = ""
+    for part, enc in decode_header(value or ""):
+        if isinstance(part, bytes):
+            output += part.decode(enc or "utf-8", errors="ignore")
+        else:
+            output += part
+    return output
+
+
+def extract_plain_body(message):
+    if message.is_multipart():
+        for part in message.walk():
+            if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition")):
+                payload = part.get_payload(decode=True) or b""
+                return payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+        return ""
+    payload = message.get_payload(decode=True) or b""
+    return payload.decode(message.get_content_charset() or "utf-8", errors="ignore")
+
+
+@app.route("/emails")
 def get_emails():
+    gmail = get_env("GMAIL", "")
+    app_password = get_env("APP_PASSWORD", "")
+    if not gmail or not app_password:
+        return jsonify({"emails": [], "error": "Email не настроен: задайте GMAIL и APP_PASSWORD"})
     try:
-        mail = imaplib.IMAP4_SSL('imap.gmail.com')
-        mail.login(GMAIL, APP_PASSWORD)
-        mail.select('inbox')
-        _, data = mail.search(None, 'ALL')
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(gmail, app_password)
+        mail.select("inbox")
+        _, data = mail.search(None, "ALL")
         ids = data[0].split()[-15:]
         emails = []
         for eid in reversed(ids):
-            _, msg_data = mail.fetch(eid, '(RFC822)')
+            _, msg_data = mail.fetch(eid, "(RFC822)")
             msg = email.message_from_bytes(msg_data[0][1])
-            def dec(s):
-                parts = decode_header(s or '')
-                r = ''
-                for p, enc in parts:
-                    r += p.decode(enc or 'utf-8', errors='ignore') if isinstance(p, bytes) else p
-                return r
-            subject = dec(msg.get('Subject', 'Без темы'))
-            from_addr = dec(msg.get('From', ''))
-            body = ''
-            if msg.is_multipart():
-                for part in msg.walk():
-                    if part.get_content_type() == 'text/plain':
-                        try:
-                            body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                            break
-                        except:
-                            pass
-            else:
-                try:
-                    body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-                except:
-                    pass
-            emails.append({'from': from_addr[:50], 'subject': subject[:80], 'preview': body[:80], 'body': body[:1500], 'date': msg.get('Date', '')[:30]})
-        stats["emails"] = len(emails)
+            body = extract_plain_body(msg)
+            emails.append(
+                {
+                    "from": decode_mime(msg.get("From", ""))[:80],
+                    "subject": decode_mime(msg.get("Subject", "Без темы"))[:120],
+                    "preview": body[:120],
+                    "body": body[:2000],
+                    "date": msg.get("Date", "")[:40],
+                }
+            )
         mail.logout()
-        return jsonify({'emails': emails})
-    except Exception as e:
-        return jsonify({'emails': [], 'error': str(e)})
+        stats["emails"] = len(emails)
+        return jsonify({"emails": emails})
+    except Exception as exc:
+        return jsonify({"emails": [], "error": str(exc)})
 
-@app.route('/send_email', methods=['POST'])
+
+@app.route("/send_email", methods=["POST"])
 def send_email():
-    data = request.json
+    gmail = get_env("GMAIL", "")
+    app_password = get_env("APP_PASSWORD", "")
+    if not gmail or not app_password:
+        return jsonify({"success": False, "error": "Email не настроен"})
+    data = request.get_json(silent=True) or {}
     try:
         msg = MIMEMultipart()
-        msg['From'] = GMAIL
-        msg['To'] = data['to']
-        msg['Subject'] = data['subject']
-        msg.attach(MIMEText(data['body'], 'plain', 'utf-8'))
-        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-        server.login(GMAIL, APP_PASSWORD)
+        msg["From"] = gmail
+        msg["To"] = data["to"]
+        msg["Subject"] = data["subject"]
+        msg.attach(MIMEText(data["body"], "plain", "utf-8"))
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
+        server.login(gmail, app_password)
         server.send_message(msg)
         server.quit()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({"success": True})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)})
 
-@app.route('/analyze', methods=['POST'])
+
+@app.route("/analyze", methods=["POST"])
 def analyze():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
+        client = require_openai()
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": "Анализируй письмо кратко на русском. Тип, требуется ответ, срочность, действия."},
-                      {"role": "user", "content": f"Тема: {data.get('subject','')}\nТекст: {data.get('text','')[:800]}"}]
+            model=get_env("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": "Кратко проанализируй письмо на русском: смысл, срочность, нужен ли ответ, следующие действия."},
+                {"role": "user", "content": f"Тема: {data.get('subject','')}\nТекст: {data.get('text','')[:1200]}"},
+            ],
         )
-        return jsonify({'analysis': response.choices[0].message.content})
-    except Exception as e:
-        return jsonify({'analysis': str(e)})
+        return jsonify({"analysis": response.choices[0].message.content})
+    except Exception as exc:
+        return jsonify({"analysis": str(exc)})
 
-@app.route('/generate_email', methods=['POST'])
+
+@app.route("/generate_email", methods=["POST"])
 def generate_email():
-    prompt = request.json.get('prompt', '')
+    prompt = (request.get_json(silent=True) or {}).get("prompt", "")
     try:
+        client = require_openai()
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": 'Напиши деловое письмо. Верни JSON: {"subject":"тема","body":"текст"}'},
-                      {"role": "user", "content": prompt}]
+            model=get_env("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": 'Напиши деловое письмо. Верни только JSON: {"subject":"тема","body":"текст"}'},
+                {"role": "user", "content": prompt},
+            ],
         )
-        text = response.choices[0].message.content.replace('```json','').replace('```','').strip()
+        text = response.choices[0].message.content.replace("```json", "").replace("```", "").strip()
         return jsonify(json.loads(text))
-    except Exception as e:
-        return jsonify({'subject': '', 'body': str(e)})
+    except Exception as exc:
+        return jsonify({"subject": "", "body": str(exc)})
 
-@app.route('/events')
+
+@app.route("/events")
 def get_events():
-    if not CALENDAR_OK:
-        return jsonify({'events': []})
+    if calendar_service is None:
+        return jsonify({"events": []})
     try:
-        now = datetime.utcnow().isoformat() + 'Z'
-        result = calendar_service.events().list(calendarId=CALENDAR_ID, timeMin=now, maxResults=5, singleEvents=True, orderBy='startTime').execute()
-        events = [{'title': e.get('summary', 'Без названия'), 'time': e['start'].get('dateTime', e['start'].get('date', ''))} for e in result.get('items', [])]
+        now = datetime.utcnow().isoformat() + "Z"
+        result = (
+            calendar_service.events()
+            .list(calendarId=CALENDAR_ID, timeMin=now, maxResults=6, singleEvents=True, orderBy="startTime")
+            .execute()
+        )
+        events = [
+            {"title": e.get("summary", "Без названия"), "time": e.get("start", {}).get("dateTime", e.get("start", {}).get("date", ""))}
+            for e in result.get("items", [])
+        ]
         stats["events"] = len(events)
-        return jsonify({'events': events})
-    except Exception as e:
-        return jsonify({'events': [], 'error': str(e)})
+        return jsonify({"events": events})
+    except Exception as exc:
+        return jsonify({"events": [], "error": str(exc)})
 
-@app.route('/add_event', methods=['POST'])
+
+@app.route("/add_event", methods=["POST"])
 def add_event():
-    data = request.json
-    if not CALENDAR_OK:
-        return jsonify({'success': False, 'error': 'Calendar not configured'})
+    if calendar_service is None:
+        return jsonify({"success": False, "error": "Календарь не настроен"})
+    data = request.get_json(silent=True) or {}
     try:
         start = f"{data['date']}T{data['time']}:00"
         end = (datetime.fromisoformat(start) + timedelta(hours=1)).isoformat()
-        event = {'summary': data['title'], 'start': {'dateTime': start, 'timeZone': 'Europe/Kiev'}, 'end': {'dateTime': end, 'timeZone': 'Europe/Kiev'}}
+        event = {
+            "summary": data["title"],
+            "start": {"dateTime": start, "timeZone": "Europe/Kiev"},
+            "end": {"dateTime": end, "timeZone": "Europe/Kiev"},
+        }
         calendar_service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        return jsonify({"success": True})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)})
 
-@app.route('/upload_doc', methods=['POST'])
+
+@app.route("/upload_doc", methods=["POST"])
 def upload_doc():
-    file = request.files.get('file')
-    if not file:
-        return jsonify({'success': False, 'error': 'Нет файла'})
+    uploaded = request.files.get("file")
+    if not uploaded:
+        return jsonify({"success": False, "error": "Нет файла"})
+    if collection is None:
+        return jsonify({"success": False, "error": "Хранилище документов не настроено"})
     try:
-        if file.filename.endswith('.pdf'):
-            reader = PdfReader(file)
-            text = ' '.join(p.extract_text() or '' for p in reader.pages)
-        elif file.filename.endswith('.docx'):
-            doc = Document(file)
-            text = ' '.join(p.text for p in doc.paragraphs)
+        filename = uploaded.filename or "document"
+        lower = filename.lower()
+        if lower.endswith(".pdf"):
+            if PdfReader is None:
+                return jsonify({"success": False, "error": "PDF модуль недоступен"})
+            reader = PdfReader(uploaded)
+            text = " ".join(page.extract_text() or "" for page in reader.pages)
+        elif lower.endswith(".docx"):
+            if Document is None:
+                return jsonify({"success": False, "error": "DOCX модуль недоступен"})
+            doc = Document(uploaded)
+            text = " ".join(p.text for p in doc.paragraphs)
         else:
-            text = file.read().decode('utf-8', errors='ignore')
+            text = uploaded.read().decode("utf-8", errors="ignore")
+
         words = text.split()
+        if not words:
+            return jsonify({"success": False, "error": "Документ пустой или текст не распознан"})
+
+        client = require_openai()
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         for i in range(0, len(words), 500):
-            chunk = ' '.join(words[i:i+500])
+            chunk = " ".join(words[i : i + 500])
             emb = client.embeddings.create(model="text-embedding-3-small", input=chunk).data[0].embedding
-            collection.add(embeddings=[emb], documents=[chunk], ids=[f"{file.filename}_{i}"])
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+            collection.add(embeddings=[emb], documents=[chunk], ids=[f"{filename}_{stamp}_{i}"])
+        return jsonify({"success": True})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)})
 
-@app.route('/ask_docs', methods=['POST'])
+
+@app.route("/ask_docs", methods=["POST"])
 def ask_docs():
-    q = request.json.get('question', '')
+    question = (request.get_json(silent=True) or {}).get("question", "").strip()
+    if not question:
+        return jsonify({"answer": "Задайте вопрос."})
+    if collection is None:
+        return jsonify({"answer": "Хранилище документов не настроено"})
     try:
-        emb = client.embeddings.create(model="text-embedding-3-small", input=q).data[0].embedding
+        client = require_openai()
+        emb = client.embeddings.create(model="text-embedding-3-small", input=question).data[0].embedding
         results = collection.query(query_embeddings=[emb], n_results=3)
-        context = '\n\n'.join(results['documents'][0]) if results['documents'] else ''
+        context = "\n\n".join(results["documents"][0]) if results.get("documents") else ""
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": SYSTEM + (f"\n\nКонтекст:\n{context}" if context else "")},
-                      {"role": "user", "content": q}]
+            model=get_env("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[
+                {"role": "system", "content": SYSTEM + (f"\n\nКонтекст документов:\n{context}" if context else "")},
+                {"role": "user", "content": question},
+            ],
         )
-        return jsonify({'answer': response.choices[0].message.content})
-    except Exception as e:
-        return jsonify({'answer': str(e)})
+        return jsonify({"answer": response.choices[0].message.content})
+    except Exception as exc:
+        return jsonify({"answer": str(exc)})
 
 
-@app.route('/search')
+@app.route("/search")
 def search():
-    import json,os
-    q = request.args.get('q','').lower().strip()
+    q = request.args.get("q", "").lower().strip()
     if not q:
-        return jsonify({'results':[]})
+        return jsonify({"results": []})
     results = []
-    try:
-        with open('crm_data.json','r',encoding='utf-8') as f:
-            crm = json.load(f)
-        for c in crm.get('clients',[]):
-            text = (str(c.get('name',''))+' '+str(c.get('phone',''))+' '+str(c.get('company',''))).lower()
-            if q in text:
-                results.append({'type':'CRM — Клиент','title':c.get('name',''),'info':str(c.get('phone',''))+' | '+str(c.get('company',''))})
-    except: pass
-    try:
-        with open('analytics_data.json','r',encoding='utf-8') as f:
-            analytics = json.load(f)
-        for biz,records in analytics.items():
-            for r in records:
-                if q in str(r.get('comment','')).lower() or q in str(r.get('date','')):
-                    results.append({'type':'Аналитика — '+biz,'title':str(r.get('revenue',0))+' грн | '+str(r.get('date','')),'info':str(r.get('comment',''))})
-    except: pass
-    return jsonify({'results':results})
+    crm = read_json(CRM_FILE, {})
+    for client in crm.get("clients", []):
+        text = f"{client.get('name', '')} {client.get('phone', '')} {client.get('company', '')}".lower()
+        if q in text:
+            results.append(
+                {
+                    "type": "CRM - клиент",
+                    "title": client.get("name", ""),
+                    "info": f"{client.get('phone', '')} | {client.get('company', '')}",
+                }
+            )
+    analytics = read_json(ANALYTICS_FILE, {})
+    for business, records in analytics.items():
+        for record in records:
+            if q in str(record.get("comment", "")).lower() or q in str(record.get("date", "")).lower():
+                results.append(
+                    {
+                        "type": "Аналитика - " + business,
+                        "title": f"{record.get('revenue', 0)} грн | {record.get('date', '')}",
+                        "info": str(record.get("comment", "")),
+                    }
+                )
+    return jsonify({"results": results})
 
-if __name__ == '__main__':
-    print("NEXUS Main: http://127.0.0.1:5000")
-    app.run(host="0.0.0.0", debug=False, port=5000)
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "5001"))
+    print(f"NEXUS Main: http://127.0.0.1:{port}")
+    app.run(host="0.0.0.0", debug=False, port=port)
