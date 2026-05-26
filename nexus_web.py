@@ -89,9 +89,26 @@ DEFAULT_STATE = {
         "instagram": "planned",
         "notion": "planned",
         "discord": "planned",
+        "database": "env:DATABASE_URL",
     },
 }
 state = load_json(STATE_FILE, DEFAULT_STATE.copy())
+
+
+def merge_state_defaults(target, defaults):
+    changed = False
+    for key, value in defaults.items():
+        if key not in target:
+            target[key] = value
+            changed = True
+        elif isinstance(value, dict) and isinstance(target.get(key), dict):
+            nested_changed = merge_state_defaults(target[key], value)
+            changed = changed or nested_changed
+    return changed
+
+
+if merge_state_defaults(state, DEFAULT_STATE):
+    save_json(STATE_FILE, state)
 stats = {
     "messages": len([m for m in history if m.get("role") == "user"]),
     "voice": 0,
@@ -228,7 +245,8 @@ button,input,textarea{font:inherit}button{cursor:pointer}.app{height:100vh;displ
 .chatbox{height:calc(100vh - 150px);display:flex;flex-direction:column}.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px}.toolbar .field{margin:0}.messages{flex:1;overflow:auto;display:flex;flex-direction:column;gap:12px;padding-right:4px}.msgwrap{max-width:82%;display:flex;flex-direction:column;gap:4px}.msgwrap.user{align-self:flex-end;align-items:flex-end}.msgwrap.ai{align-self:flex-start}.speaker{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}.bubble{padding:12px 14px;border-radius:14px;line-height:1.55;font-size:14px;word-break:break-word}.bubble.user{background:#18374a}.bubble.ai{background:#0f2b25;border:1px solid rgba(72,224,140,.18)}.bubble pre{background:#050a0d;border:1px solid var(--line);padding:12px;border-radius:10px;overflow:auto}.bubble code{font-family:Consolas,monospace;color:#b7f7ff}.bubble ul{margin:8px 0 8px 18px}.edit-btn{border:0;background:transparent;color:var(--muted);font-size:12px;padding:0}.compose{border-top:1px solid var(--line);padding-top:12px;display:grid;grid-template-columns:auto 1fr auto auto;gap:10px;align-items:end}.compose textarea{margin:0;min-height:46px;max-height:140px}.speak{display:none;color:var(--cyan);font-size:13px;margin-left:auto}.speak.on{display:block}.wave{display:inline-flex;gap:3px;align-items:end;margin-right:6px}.wave span{width:3px;background:var(--cyan);border-radius:3px;animation:wave 650ms infinite}.wave span:nth-child(1){height:8px}.wave span:nth-child(2){height:15px;animation-delay:.12s}.wave span:nth-child(3){height:11px;animation-delay:.22s}@keyframes wave{50%{transform:scaleY(.35)}}.recording{outline:2px solid rgba(255,114,114,.5)}
 .item{background:#071218;border:1px solid var(--line);border-radius:12px;padding:12px}.item-title{font-weight:750;margin-bottom:5px}.item-meta{color:var(--muted);font-size:13px;line-height:1.45}.list{display:grid;gap:10px}.alert{border-radius:12px;padding:11px 13px;margin-bottom:12px;font-size:13px}.alert.ok{background:rgba(72,224,140,.12);color:var(--green);border:1px solid rgba(72,224,140,.28)}.alert.err{background:rgba(255,114,114,.12);color:var(--red);border:1px solid rgba(255,114,114,.28)}
 .bottom-nav{display:none;position:fixed;left:0;right:0;bottom:0;background:rgba(6,16,20,.94);border-top:1px solid var(--line);backdrop-filter:blur(14px);padding:8px;grid-template-columns:repeat(5,1fr);gap:6px}.bottom-nav button{border:0;background:transparent;color:var(--muted);border-radius:10px;padding:8px 4px;font-size:11px}.bottom-nav button.active{background:rgba(53,215,233,.12);color:var(--cyan)}
-@media(max-width:900px){.app{grid-template-columns:1fr}.sidebar{display:none}.bottom-nav{display:grid}.grid4,.grid2{grid-template-columns:1fr}.topbar{padding:0 14px}.content{padding:14px 14px 88px}.chatbox{height:calc(100vh - 128px)}.msgwrap{max-width:94%}.compose{grid-template-columns:auto 1fr auto}.compose .file-label{display:none}.meta span:nth-child(2){display:none}}
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.status-ok{color:var(--green)}.status-warn{color:var(--amber)}.status-plan{color:var(--muted)}
+@media(max-width:900px){.app{grid-template-columns:1fr}.sidebar{display:none}.bottom-nav{display:grid;grid-template-columns:repeat(auto-fit,minmax(54px,1fr));overflow-x:auto}.grid4,.grid2{grid-template-columns:1fr}.topbar{padding:0 14px}.content{padding:14px 14px 88px}.chatbox{height:calc(100vh - 128px)}.msgwrap{max-width:94%}.compose{grid-template-columns:auto 1fr auto}.compose .file-label{display:none}.meta span:nth-child(2){display:none}}
 </style>
 </head>
 <body>
@@ -272,18 +290,21 @@ button,input,textarea{font:inherit}button{cursor:pointer}.app{height:100vh;displ
       </div>
       <div class="page" id="voice"><div class="card"><h3>Voice Engine</h3><div class="item-meta">Доступно: запись, автоотправка, прерывание текущей озвучки, индикатор записи и ответа. Wake word работает в браузере как эксперимент: скажите “Эй NEXUS”, затем команду.</div><button class="btn" style="margin-top:14px" onclick="toggleVoice()">Запустить голос</button></div></div>
       <div class="page" id="search"><div class="card"><h3>Поиск по истории</h3><input class="field" id="globalSearch" placeholder="Введите фразу..." oninput="searchHistory('globalSearch','globalResults')"><div id="globalResults" class="list"><div class="item-meta">Введите текст для поиска.</div></div></div></div>
-      <div class="page" id="files"><div class="card"><h3>Файлы в чате</h3><div class="item-meta" style="margin-bottom:12px">Загружайте PDF, DOCX, TXT, изображения или рабочие файлы прямо в диалог. NEXUS сохранит факт загрузки в истории.</div><label class="btn" for="chatFilePage">Загрузить файл</label><input id="chatFilePage" type="file" style="display:none" onchange="uploadChatFile(this)"><div id="fileResult" class="list" style="margin-top:12px"></div></div></div>
+      <div class="page" id="files"><div class="card"><h3>Files</h3><div class="item-meta" style="margin-bottom:12px">Upload business documents directly into the NEXUS chat history.</div><label class="btn" for="chatFilePage">Upload file</label><input id="chatFilePage" type="file" style="display:none" onchange="uploadChatFile(this)"><div id="fileResult" class="list" style="margin-top:12px"></div></div></div>
+      <div class="page" id="tasksPage"><div class="grid2"><div class="card"><h3>Tasks</h3><div class="row"><input class="field" id="taskTitle" placeholder="New task"><button class="btn" onclick="createTask()">Add</button></div><div id="tasksList" class="list"></div></div><div class="card"><h3>Command Center</h3><input class="field" id="commandInput" placeholder="добавь задачу проверить продажи" onkeydown="if(event.key==='Enter')runCommand()"><button class="btn" onclick="runCommand()">Run command</button><div id="commandResult" class="item-meta" style="margin-top:12px"></div></div></div></div>
+      <div class="page" id="agentsPage"><div class="grid2"><div class="card"><h3>Business agents</h3><div id="agentsList" class="list"></div></div><div class="card"><h3>Create agent</h3><input class="field" id="agentName" placeholder="Agent name"><textarea class="field" id="agentDescription" placeholder="What this agent does"></textarea><button class="btn" onclick="createAgent()">Create agent</button></div></div></div>
+      <div class="page" id="settingsPage"><div class="stack"><div class="card"><h3>Integrations</h3><div id="integrationsList" class="status-grid"></div></div><div class="card"><h3>Capabilities</h3><div id="capabilitiesList" class="status-grid"></div></div><div class="card"><h3>Users</h3><div id="usersList" class="list"></div><div class="grid2" style="margin-top:12px"><input class="field" id="newUsername" placeholder="username"><select class="field" id="newUserRole"><option value="employee">employee</option><option value="guest">guest</option><option value="admin">admin</option></select></div><input class="field" id="newUserPassword" placeholder="temporary password"><button class="btn" onclick="saveUser()">Save user</button></div></div></div>
     </section>
   </main>
 </div>
 <nav class="bottom-nav" id="bottomNav"></nav>
 <script>
-var navItems=[['dashboard','📊','Dashboard'],['chat','💬','Чат'],['voice','🎙️','Голос'],['search','🔎','Поиск'],['files','📎','Файлы']];
+var navItems=[['dashboard','📊','Dashboard'],['chat','💬','Chat'],['tasksPage','✅','Tasks'],['agentsPage','🧩','Agents'],['settingsPage','⚙️','Settings'],['voice','🎙️','Voice'],['files','📎','Files']];
 var currentAudio=null,recognition=null,isListening=false,wakeMode=false,messages=[],editingId=null;
 var csrfToken=document.querySelector('meta[name="csrf-token"]').content;
 function $(id){return document.getElementById(id)}function esc(t){var d=document.createElement('div');d.textContent=t||'';return d.innerHTML}
 function renderNav(){['sideNav','bottomNav'].forEach(function(id){$(id).innerHTML=navItems.map(function(n,i){return '<button class="'+(i===0?'active':'')+'" data-page="'+n[0]+'"><span class="emoji">'+n[1]+'</span>'+n[2]+'</button>'}).join('')});document.querySelectorAll('[data-page]').forEach(function(b){b.onclick=function(){showPage(b.dataset.page,b)}})}renderNav();
-function showPage(page,btn){document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});$(page).classList.add('active');document.querySelectorAll('[data-page]').forEach(function(x){x.classList.toggle('active',x.dataset.page===page)});$('pageTitle').textContent={dashboard:'Dashboard',chat:'Чат NEXUS',voice:'Voice Engine',search:'Поиск',files:'Файлы'}[page]||'NEXUS'}
+function showPage(page,btn){document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});$(page).classList.add('active');document.querySelectorAll('[data-page]').forEach(function(x){x.classList.toggle('active',x.dataset.page===page)});$('pageTitle').textContent={dashboard:'Dashboard',chat:'Chat NEXUS',voice:'Voice Engine',search:'Search',files:'Files',tasksPage:'Tasks',agentsPage:'Agents',settingsPage:'Settings'}[page]||'NEXUS';if(page==='tasksPage')loadTasks();if(page==='agentsPage')loadAgents();if(page==='settingsPage')loadSettings()}
 function alertMsg(t,ok){$('alert').innerHTML='<div class="alert '+(ok?'ok':'err')+'">'+esc(t)+'</div>';setTimeout(function(){$('alert').innerHTML=''},4200)}
 function api(url,opts){opts=opts||{};opts.headers=opts.headers||{};if(opts.method&&opts.method.toUpperCase()==='POST')opts.headers['X-CSRF-Token']=csrfToken;return fetch(url,opts).then(function(r){if(r.status===401){location.href='/login';return}return r.text().then(function(t){try{return JSON.parse(t)}catch(e){throw new Error('Сервер вернул не JSON: '+url)}})})}
 function md(t){var s=esc(t);s=s.replace(/```([\\s\\S]*?)```/g,function(_,c){return '<pre><code>'+c+'</code></pre>'});s=s.replace(/`([^`]+)`/g,'<code>$1</code>');s=s.replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');s=s.replace(/\\*([^*]+)\\*/g,'<em>$1</em>');s=s.replace(/^[-•] (.*)$/gm,'<li>$1</li>');s=s.replace(/(<li>[\\s\\S]*?<\\/li>)/g,'<ul>$1</ul>');return s.replace(/\\n/g,'<br>')}
@@ -300,6 +321,14 @@ function searchHistory(inputId,outId){var q=($(inputId||'historyQuery')?.value||
 function toggleVoice(){if(currentAudio){currentAudio.pause();currentAudio=null;$('speaking').classList.remove('on')}if(!window.SpeechRecognition&&!window.webkitSpeechRecognition){alertMsg('Голосовой ввод доступен в Chrome.',false);return}if(isListening&&recognition){recognition.stop();return}var SR=window.SpeechRecognition||window.webkitSpeechRecognition;recognition=new SR();recognition.lang='ru-RU';recognition.continuous=false;recognition.interimResults=false;recognition.onstart=function(){isListening=true;$('micBtn').classList.add('recording');$('micBtn').textContent='⏹'};recognition.onend=function(){isListening=false;$('micBtn').classList.remove('recording');$('micBtn').textContent='🎤'};recognition.onerror=recognition.onend;recognition.onresult=function(e){var t=e.results[0][0].transcript;if(t.toLowerCase().indexOf('эй nexus')>=0||t.toLowerCase().indexOf('эй нексус')>=0){t=t.replace(/эй nexus/ig,'').replace(/эй нексус/ig,'').trim();wakeMode=true}if(t){$('chatInput').value=t;sendMsg(true)}};recognition.start()}
 function uploadChatFile(input){var f=input.files[0];if(!f)return;var fd=new FormData();fd.append('file',f);api('/upload_chat',{method:'POST',body:fd}).then(function(d){alertMsg(d.message||'Файл загружен',!!d.success);if($('fileResult'))$('fileResult').innerHTML='<div class="item"><div class="item-title">'+esc(f.name)+'</div><div class="item-meta">'+esc(d.message||'Файл загружен')+'</div></div>';loadStats();loadHistory()})}
 function loadBriefing(){var city=($('briefCity').value||'Kyiv').trim();$('briefingResult').textContent='Собираю брифинг...';api('/morning_briefing?city='+encodeURIComponent(city)).then(function(d){$('briefingResult').innerHTML=md(d.briefing||d.error||'');loadStats()}).catch(function(e){$('briefingResult').textContent=e.message})}
+function loadTasks(){api('/tasks').then(function(d){var tasks=d.tasks||[];$('tasksList').innerHTML=tasks.map(function(t){return '<div class="item"><div class="item-title">'+esc(t.title)+'</div><div class="item-meta">'+esc(t.status||'open')+' · '+esc(t.owner||'')+'</div></div>'}).join('')||'<div class="item-meta">No tasks yet.</div>'})}
+function createTask(){var title=($('taskTitle').value||'').trim();if(!title)return;api('/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title})}).then(function(d){$('taskTitle').value='';alertMsg(d.success?'Task created':(d.error||'Task error'),!!d.success);loadTasks()})}
+function runCommand(){var command=($('commandInput').value||'').trim();if(!command)return;api('/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:command})}).then(function(d){$('commandResult').textContent=JSON.stringify(d,null,2);loadTasks();loadStats()})}
+function loadAgents(){api('/agents').then(function(d){var agents=d.agents||[];$('agentsList').innerHTML=agents.map(function(a){return '<div class="item"><div class="item-title">'+esc(a.name)+'</div><div class="item-meta">'+esc(a.status||'')+'<br>'+esc(a.description||'')+'</div></div>'}).join('')||'<div class="item-meta">No agents yet.</div>'})}
+function createAgent(){var name=($('agentName').value||'').trim();var description=($('agentDescription').value||'').trim();if(!name)return;api('/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,description:description})}).then(function(d){$('agentName').value='';$('agentDescription').value='';alertMsg(d.success?'Agent created':(d.error||'Agent error'),!!d.success);loadAgents()})}
+function statusClass(status){if(status==='configured'||status==='done')return 'status-ok';if(status==='planned'||String(status).indexOf('planned')>=0)return 'status-plan';return 'status-warn'}
+function loadSettings(){api('/capabilities').then(function(d){var integrations=d.integrations||{};$('integrationsList').innerHTML=Object.keys(integrations).map(function(k){var s=integrations[k].status;return '<div class="item"><div class="item-title">'+esc(k)+'</div><div class="item-meta '+statusClass(s)+'">'+esc(s)+'</div></div>'}).join('');var caps=d.capabilities||{};$('capabilitiesList').innerHTML=Object.keys(caps).map(function(k){var s=caps[k];return '<div class="item"><div class="item-title">'+esc(k)+'</div><div class="item-meta '+statusClass(s)+'">'+esc(s)+'</div></div>'}).join('')});api('/users').then(function(d){var users=d.users||[];$('usersList').innerHTML=users.map(function(u){return '<div class="item"><div class="item-title">'+esc(u.username)+'</div><div class="item-meta">'+esc(u.role)+'</div></div>'}).join('')})}
+function saveUser(){var username=($('newUsername').value||'').trim();var role=$('newUserRole').value;var password=$('newUserPassword').value;if(!username)return;api('/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:username,role:role,password:password})}).then(function(d){alertMsg(d.success?'User saved':(d.error||'User error'),!!d.success);loadSettings()})}
 loadStats();loadHistory();setInterval(loadStats,8000);
 </script>
 </body>
@@ -357,6 +386,30 @@ def integration_status():
         else:
             result[name] = {"status": "unknown"}
     return result
+
+
+def storage_status():
+    database_url = get_env("DATABASE_URL", "").strip()
+    if database_url.startswith(("postgres://", "postgresql://")):
+        return {
+            "backend": "postgresql_ready",
+            "configured": True,
+            "active": False,
+            "note": "DATABASE_URL is set. Migration layer is the next step before switching writes from JSON.",
+        }
+    if database_url:
+        return {
+            "backend": "database_url_unknown",
+            "configured": True,
+            "active": False,
+            "note": "DATABASE_URL is set, but it is not PostgreSQL.",
+        }
+    return {
+        "backend": "json_files",
+        "configured": False,
+        "active": True,
+        "note": "Current storage uses JSON files. Set DATABASE_URL for PostgreSQL migration readiness.",
+    }
 
 
 def capability_map():
@@ -443,6 +496,7 @@ def healthz():
             "ok": True,
             "app": "nexus_web",
             "time": datetime.utcnow().isoformat() + "Z",
+            "storage": storage_status(),
             "features": {
                 "stats": True,
                 "chat_stream": True,
@@ -464,6 +518,7 @@ def capabilities():
             "user": current_user(),
             "capabilities": capability_map(),
             "integrations": integration_status(),
+            "storage": storage_status(),
             "roadmap_next": [
                 "2FA",
                 "PostgreSQL migration",

@@ -18,6 +18,7 @@ def main():
 
     health = client.get("/healthz")
     check("healthz", health.status_code == 200 and health.json.get("ok") is True)
+    check("storage status", "storage" in health.json and "backend" in health.json["storage"])
 
     protected = client.get("/history")
     check("history requires login", protected.status_code == 401)
@@ -57,6 +58,7 @@ def main():
 
     capabilities = client.get("/capabilities")
     check("capabilities registry", capabilities.status_code == 200 and "capabilities" in capabilities.json)
+    check("settings payload", "integrations" in capabilities.json and "storage" in capabilities.json)
 
     users = client.get("/users")
     check("users admin endpoint", users.status_code == 200 and "users" in users.json)
