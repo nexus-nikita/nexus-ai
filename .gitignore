@@ -1,0 +1,32 @@
+# Local secrets and private data
+.env
+*.env
+nexus_memory.json
+nexus_profile.json
+crm_data.json
+analytics_data.json
+tasks.json
+users.json
+reminders.json
+replied_emails.json
+service_account.json
+google_creds.json
+nexus_state.json
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtualenv
+Include/
+Lib/
+Scripts/
+pyvenv.cfg
+
+# Misc
+*.log
+.DS_Store
+chat_uploads/
+backups/

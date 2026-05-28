@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  nexus:
+    build: .
+    container_name: nexus-ai
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    volumes:
+      - ./nexus_memory.json:/app/nexus_memory.json
+      - ./nexus_profile.json:/app/nexus_profile.json
+      - ./crm_data.json:/app/crm_data.json
+      - ./analytics_data.json:/app/analytics_data.json
+      - ./tasks.json:/app/tasks.json
+      - ./users.json:/app/users.json
+      - ./reminders.json:/app/reminders.json
+      - ./service_account.json:/app/service_account.json
+    restart: unless-stopped
+
+  nexus-telegram:
+    build: .
+    container_name: nexus-telegram
+    command: python nexus_telegram.py
+    env_file:
+      - .env
+    volumes:
+      - ./nexus_memory.json:/app/nexus_memory.json
+      - ./tasks.json:/app/tasks.json
+      - ./crm_data.json:/app/crm_data.json
+      - ./analytics_data.json:/app/analytics_data.json
+      - ./reminders.json:/app/reminders.json
+    restart: unless-stopped
+    depends_on:
+      - nexus
