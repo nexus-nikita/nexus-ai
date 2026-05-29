@@ -256,7 +256,9 @@ LOGIN_HTML = """<!DOCTYPE html>
 label{display:block;color:var(--muted);font-size:12px;margin-bottom:8px}input{width:100%;height:46px;border:1px solid var(--line);border-radius:12px;background:#071218;color:var(--text);padding:0 14px;outline:none;font-size:16px}input:focus{border-color:var(--cyan);box-shadow:0 0 0 3px rgba(53,215,233,.13)}
 button{width:100%;height:48px;margin-top:14px;border:0;border-radius:12px;background:linear-gradient(135deg,var(--cyan),var(--green));color:#031014;font-weight:900;cursor:pointer;font-size:15px}.error{min-height:20px;margin-top:12px;color:#ff7c7c;font-size:13px}
 .hint{font-size:12px;color:var(--muted);margin-top:8px;text-align:center}
-</style></head><body>
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head><body>
 {% if totp_required %}
 <form class="box" method="post">
   <input type="hidden" name="username" value="{{ username }}">
@@ -561,23 +563,66 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
       <!-- ANALYTICS -->
       <div class="page" id="analyticsPage">
         <div class="stack">
+          <!-- KPI row -->
           <div class="grid3">
-            <div class="card stat"><div class="num" id="an_total">0</div><div><div class="lab">Выручка</div><div class="hint">За 30 дней, грн</div></div></div>
-            <div class="card stat"><div class="num" id="an_expenses">0</div><div><div class="lab">Расходы</div><div class="hint">За 30 дней, грн</div></div></div>
-            <div class="card stat"><div class="num" id="an_profit">0</div><div><div class="lab">Прибыль</div><div class="hint">Выручка − расходы</div></div></div>
+            <div class="card stat">
+              <div class="num" id="an_total">0</div>
+              <div><div class="lab">Выручка</div><div class="hint" id="an_total_hint">за 30 дней, грн</div></div>
+            </div>
+            <div class="card stat">
+              <div class="num" id="an_expenses_kpi">0</div>
+              <div><div class="lab">Расходы</div><div class="hint" id="an_expenses_hint">за 30 дней, грн</div></div>
+            </div>
+            <div class="card stat">
+              <div class="num" id="an_profit">0</div>
+              <div><div class="lab">Прибыль</div><div class="hint" id="an_profit_hint">маржа —%</div></div>
+            </div>
           </div>
-          <div class="card"><h3>График выручки (7 дней)</h3><div class="chart-wrap"><canvas id="revenueChart"></canvas></div></div>
+          <!-- Charts row -->
           <div class="grid2">
-            <div class="card"><h3>Добавить запись</h3>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h3 style="margin:0">📊 Выручка vs Расходы</h3>
+                <select class="field" id="an_chart_period" onchange="loadAnalytics()" style="width:100px;margin:0;font-size:12px">
+                  <option value="7">7 дней</option>
+                  <option value="30">30 дней</option>
+                  <option value="90">3 месяца</option>
+                </select>
+              </div>
+              <div style="position:relative;height:200px"><canvas id="revenueChart"></canvas></div>
+            </div>
+            <div class="card">
+              <h3>🍩 По бизнесам</h3>
+              <div style="position:relative;height:200px"><canvas id="businessChart"></canvas></div>
+            </div>
+          </div>
+          <!-- Add record + history -->
+          <div class="grid2">
+            <div class="card"><h3>➕ Добавить запись</h3>
               <input class="field" id="an_date" type="date">
-              <select class="field" id="an_business"><option value="obshchepit">Общепит</option><option value="akva">Аква</option><option value="prodvizhenie">Продвижение</option></select>
+              <select class="field" id="an_business">
+                <option value="obshchepit">🍽 Общепит</option>
+                <option value="akva">💧 Аква</option>
+                <option value="prodvizhenie">📣 Продвижение</option>
+              </select>
               <input class="field" id="an_revenue" type="number" placeholder="Выручка, грн">
               <input class="field" id="an_expenses" type="number" placeholder="Расходы, грн">
               <input class="field" id="an_clients" type="number" placeholder="Клиентов">
               <input class="field" id="an_comment" placeholder="Комментарий">
-              <button class="btn" style="width:100%" onclick="addAnalyticsRecord()">Сохранить</button>
+              <button class="btn" style="width:100%;margin-top:4px" onclick="addAnalyticsRecord()">Сохранить</button>
             </div>
-            <div class="card"><h3>История записей</h3><div id="analyticsHistory" class="list"></div></div>
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h3 style="margin:0">📋 История</h3>
+                <select class="field" id="an_filter_biz" onchange="loadAnalytics()" style="width:130px;margin:0;font-size:12px">
+                  <option value="">Все бизнесы</option>
+                  <option value="obshchepit">Общепит</option>
+                  <option value="akva">Аква</option>
+                  <option value="prodvizhenie">Продвижение</option>
+                </select>
+              </div>
+              <div id="analyticsHistory" class="list"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -1184,47 +1229,122 @@ function addNote(){
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function loadAnalytics(){
+  var days=parseInt(($('an_chart_period')||{value:'7'}).value||7);
+  var bizFilter=($('an_filter_biz')||{value:''}).value;
   api('/analytics').then(function(d){
     var records=d.records||[];
-    var now=Date.now();var day30=new Date(now-30*864e5).toISOString().slice(0,10);
-    var recent=records.filter(function(r){return r.date>=day30});
-    var revenue=recent.reduce(function(a,r){return a+parseFloat(r.revenue||0)},0);
-    var expenses=recent.reduce(function(a,r){return a+parseFloat(r.expenses||0)},0);
+    var cutoff=new Date(Date.now()-days*864e5).toISOString().slice(0,10);
+    var recent=records.filter(function(r){return r.date>=cutoff});
+    var filtered=bizFilter?recent.filter(function(r){return r.business===bizFilter}):recent;
+    var revenue=filtered.reduce(function(a,r){return a+parseFloat(r.revenue||0)},0);
+    var expenses=filtered.reduce(function(a,r){return a+parseFloat(r.expenses||0)},0);
+    var profit=revenue-expenses;
+    var margin=revenue>0?Math.round(profit/revenue*100):0;
     $('an_total').textContent=Math.round(revenue).toLocaleString();
-    $('an_expenses').textContent=Math.round(expenses).toLocaleString();
-    $('an_profit').textContent=Math.round(revenue-expenses).toLocaleString();
-    drawRevenueChart(records);
-    $('analyticsHistory').innerHTML=records.slice(-10).reverse().map(function(r){
-      return'<div class="item"><div class="item-title">'+esc(r.date)+' — '+esc(r.business)+'</div>'
-        +'<div class="item-meta">Выручка: <b style="color:var(--green)">'+esc(String(r.revenue||0))+'</b> грн | Расходы: '+esc(String(r.expenses||0))+' | Клиентов: '+esc(String(r.clients||0))+(r.comment?' | '+esc(r.comment):'')+'</div></div>';
+    $('an_expenses_kpi').textContent=Math.round(expenses).toLocaleString();
+    $('an_profit').textContent=Math.round(profit).toLocaleString();
+    $('an_profit').style.color=profit>=0?'var(--green)':'#ff6b6b';
+    if($('an_profit_hint'))$('an_profit_hint').textContent='маржа '+margin+'%';
+
+    drawRevenueChart(records, days, bizFilter);
+    drawBusinessChart(records);
+
+    var showRecords=bizFilter?records.filter(function(r){return r.business===bizFilter}):records;
+    $('analyticsHistory').innerHTML=showRecords.slice(-15).reverse().map(function(r){
+      var biz={obshchepit:'🍽',akva:'💧',prodvizhenie:'📣'}[r.business]||'📊';
+      var rev=parseFloat(r.revenue||0),exp=parseFloat(r.expenses||0);
+      var pr=rev-exp;
+      return '<div class="item">'
+        +'<div class="item-title">'+biz+' '+esc(r.date)+' — '+esc(r.business)+'</div>'
+        +'<div class="item-meta">'
+        +'<span style="color:var(--green)">↑'+Math.round(rev).toLocaleString()+'</span> / '
+        +'<span style="color:#ff9f43">↓'+Math.round(exp).toLocaleString()+'</span> / '
+        +'<b style="color:'+(pr>=0?'var(--green)':'#ff6b6b')+'">='+(pr>=0?'+':'')+Math.round(pr).toLocaleString()+'</b> грн'
+        +(r.clients?' | 👥'+r.clients:'')
+        +(r.comment?' | <i>'+esc(r.comment)+'</i>':'')
+        +'</div></div>';
     }).join('')||'<div class="item-meta">Нет данных.</div>';
   });
 }
-function drawRevenueChart(records){
-  var canvas=$('revenueChart');if(!canvas)return;
-  var ctx=canvas.getContext('2d');
-  canvas.width=canvas.parentElement.clientWidth||600;canvas.height=220;
-  var days=[];for(var i=6;i>=0;i--){var d=new Date(Date.now()-i*864e5);days.push(d.toISOString().slice(0,10))}
-  var vals=days.map(function(d){return records.filter(function(r){return r.date===d}).reduce(function(a,r){return a+parseFloat(r.revenue||0)},0)});
-  var maxVal=Math.max.apply(null,vals)||1;
-  var W=canvas.width,H=canvas.height,pad=40,barW=Math.floor((W-pad*2)/7)-8;
-  ctx.clearRect(0,0,W,H);ctx.fillStyle='#0a1a22';ctx.fillRect(0,0,W,H);
-  ctx.strokeStyle='#25414b';ctx.lineWidth=1;
-  for(var g=0;g<=4;g++){var y=H-pad-(H-pad*2)*(g/4);ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(W-20,y);ctx.stroke();ctx.fillStyle='#8da4ab';ctx.font='10px Inter,sans-serif';ctx.fillText(Math.round(maxVal*g/4),2,y+4)}
-  days.forEach(function(d,i){
-    var x=pad+i*(barW+8);var val=vals[i];var barH=((H-pad*2)*val/maxVal)||2;
-    var grad=ctx.createLinearGradient(x,H-pad-barH,x,H-pad);grad.addColorStop(0,'#35d7e9');grad.addColorStop(1,'#48e08c');
-    ctx.fillStyle=grad;ctx.beginPath();ctx.roundRect(x,H-pad-barH,barW,barH,4);ctx.fill();
-    ctx.fillStyle='#8da4ab';ctx.font='10px Inter,sans-serif';ctx.fillText(d.slice(5),x,H-6);
-    if(val>0){ctx.fillStyle='#eef8f9';ctx.fillText(Math.round(val),x,H-pad-barH-4)}
+
+var _revenueChartInst=null;
+var _businessChartInst=null;
+
+function drawRevenueChart(records, days, bizFilter){
+  var canvas=$('revenueChart'); if(!canvas)return;
+  var labels=[]; var revData=[]; var expData=[];
+  for(var i=days-1;i>=0;i--){
+    var d=new Date(Date.now()-i*864e5).toISOString().slice(0,10);
+    labels.push(days<=7?d.slice(5):d.slice(5));
+    var dayRecs=records.filter(function(r){return r.date===d&&(!bizFilter||r.business===bizFilter)});
+    revData.push(dayRecs.reduce(function(a,r){return a+parseFloat(r.revenue||0)},0));
+    expData.push(dayRecs.reduce(function(a,r){return a+parseFloat(r.expenses||0)},0));
+  }
+  if(_revenueChartInst){_revenueChartInst.destroy();}
+  _revenueChartInst=new Chart(canvas,{
+    type:'bar',
+    data:{
+      labels:labels,
+      datasets:[
+        {label:'Выручка',data:revData,backgroundColor:'rgba(53,215,233,0.7)',borderColor:'#35d7e9',borderWidth:1,borderRadius:4},
+        {label:'Расходы',data:expData,backgroundColor:'rgba(255,159,67,0.7)',borderColor:'#ff9f43',borderWidth:1,borderRadius:4}
+      ]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#c5d5d9',font:{size:11}}},tooltip:{callbacks:{label:function(ctx){return ctx.dataset.label+': '+Math.round(ctx.raw).toLocaleString()+' грн'}}}},
+      scales:{
+        x:{ticks:{color:'#8da4ab',font:{size:10}},grid:{color:'#1a2f3a'}},
+        y:{ticks:{color:'#8da4ab',font:{size:10},callback:function(v){return v>=1000?(v/1000).toFixed(1)+'k':v}},grid:{color:'#1a2f3a'}}
+      }
+    }
   });
 }
-function addAnalyticsRecord(){
-  var data={date:$('an_date').value||new Date().toISOString().slice(0,10),business:$('an_business').value,revenue:parseFloat($('an_revenue').value||0),expenses:parseFloat($('an_expenses').value||0),clients:parseInt($('an_clients').value||0),comment:$('an_comment').value};
-  api('/analytics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
-  .then(function(d){alertMsg(d.success?'Запись добавлена':(d.error||'Ошибка'),!!d.success);if(d.success){$('an_revenue').value='';$('an_expenses').value='';$('an_clients').value='';$('an_comment').value='';loadAnalytics()}});
+
+function drawBusinessChart(records){
+  var canvas=$('businessChart'); if(!canvas)return;
+  var cutoff=new Date(Date.now()-30*864e5).toISOString().slice(0,10);
+  var recent=records.filter(function(r){return r.date>=cutoff});
+  var bizMap={obshchepit:0,akva:0,prodvizhenie:0};
+  recent.forEach(function(r){if(bizMap[r.business]!==undefined)bizMap[r.business]+=parseFloat(r.revenue||0)});
+  if(_businessChartInst){_businessChartInst.destroy();}
+  _businessChartInst=new Chart(canvas,{
+    type:'doughnut',
+    data:{
+      labels:['🍽 Общепит','💧 Аква','📣 Продвижение'],
+      datasets:[{data:[bizMap.obshchepit,bizMap.akva,bizMap.prodvizhenie],
+        backgroundColor:['rgba(245,189,99,0.85)','rgba(53,215,233,0.85)','rgba(72,224,140,0.85)'],
+        borderColor:['#f5bd63','#35d7e9','#48e08c'],borderWidth:2}]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,cutout:'60%',
+      plugins:{
+        legend:{position:'bottom',labels:{color:'#c5d5d9',font:{size:11},padding:12}},
+        tooltip:{callbacks:{label:function(ctx){var total=ctx.dataset.data.reduce(function(a,b){return a+b},0);var pct=total>0?Math.round(ctx.raw/total*100):0;return ctx.label+': '+Math.round(ctx.raw).toLocaleString()+' грн ('+pct+'%)'}}}
+      }
+    }
+  });
 }
-if(typeof CanvasRenderingContext2D!=='undefined'&&!CanvasRenderingContext2D.prototype.roundRect){CanvasRenderingContext2D.prototype.roundRect=function(x,y,w,h,r){this.moveTo(x+r,y);this.lineTo(x+w-r,y);this.quadraticCurveTo(x+w,y,x+w,y+r);this.lineTo(x+w,y+h-r);this.quadraticCurveTo(x+w,y+h,x+w-r,y+h);this.lineTo(x+r,y+h);this.quadraticCurveTo(x,y+h,x,y+h-r);this.lineTo(x,y+r);this.quadraticCurveTo(x,y,x+r,y);this.closePath();return this}}
+
+function addAnalyticsRecord(){
+  var data={
+    date:$('an_date').value||new Date().toISOString().slice(0,10),
+    business:$('an_business').value,
+    revenue:parseFloat($('an_revenue').value||0),
+    expenses:parseFloat($('an_expenses').value||0),
+    clients:parseInt($('an_clients').value||0),
+    comment:$('an_comment').value
+  };
+  api('/analytics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
+  .then(function(d){
+    alertMsg(d.success?'✅ Запись добавлена':(d.error||'Ошибка'),!!d.success);
+    if(d.success){
+      $('an_revenue').value='';$('an_expenses').value='';
+      $('an_clients').value='';$('an_comment').value='';
+      loadAnalytics();
+    }
+  });
+}
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 function loadEmails(){
