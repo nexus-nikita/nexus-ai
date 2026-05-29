@@ -21,7 +21,17 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 # ── Конфиг ────────────────────────────────────────────────────────────────────
 
-BASE_DIR = Path(__file__).resolve().parent
+# Data dir: NEXUS_DATA_DIR > /app (Render disk) > script directory
+import os as _os
+_code_dir   = Path(__file__).resolve().parent
+_render_disk = Path("/app")
+_env_data    = _os.environ.get("NEXUS_DATA_DIR", "").strip()
+if _env_data:
+    BASE_DIR = Path(_env_data)
+elif _render_disk.is_dir() and _code_dir != _render_disk:
+    BASE_DIR = _render_disk
+else:
+    BASE_DIR = _code_dir
 
 
 def load_env():
@@ -123,14 +133,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await deny(update)
     await update.message.reply_text(
         "⚡ *NEXUS активен!*\n\n"
-        "📋 Команды:\n"
+        "📋 *Задачи:*\n"
         "/tasks — список задач\n"
-        "/addtask [текст] — добавить задачу\n"
+        "/addtask [текст] — добавить\n"
+        "/done [часть названия] — отметить выполненной\n\n"
+        "📊 *Бизнес:*\n"
         "/status — статус системы\n"
         "/analytics — выручка за 7 дней\n"
         "/crm — последние клиенты\n"
-        "/remind [мин] [текст] — напомнить\n\n"
-        "💬 Или просто пиши — отвечу текстом\n"
+        "/brief — утренний брифинг\n"
+        "/weather [город] — погода\n\n"
+        "🔔 *Напоминания:*\n"
+        "/remind [мин] [текст] — напомнить через N минут\n\n"
+        "💬 Или просто пиши — отвечу\n"
         "🎤 Голосовое — распознаю и отвечу\n"
         "📸 Фото — проанализирую",
         parse_mode="Markdown"
@@ -200,38 +215,40 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return await deny(update)
-    data = read_json(ANALYTICS_FILE, {"obshchepit": [], "akva": [], "prodvizhenie": []})
-    cutoff = datetime.now() - timedelta(days=7)
+    raw = read_json(ANALYTICS_FILE, {})
+    # Support both new {"records":[...]} and old {business:[...]} formats
+    if isinstance(raw, dict) and "records" in raw:
+        all_records = raw["records"]
+    elif isinstance(raw, dict):
+        all_records = []
+        for biz, entries in raw.items():
+            if isinstance(entries, list):
+                for e in entries:
+                    e = dict(e); e.setdefault("business", biz); all_records.append(e)
+    else:
+        all_records = []
+
+    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    recent = [r for r in all_records if r.get("date", "") >= cutoff]
 
     names = {"obshchepit": "🍽️ Общепит", "akva": "🐟 Аква", "prodvizhenie": "📈 Продвижение"}
-    total_rev = 0
-    total_exp = 0
+    by_biz = {}
+    for r in recent:
+        biz = r.get("business", "other")
+        if biz not in by_biz: by_biz[biz] = {"rev": 0, "exp": 0}
+        by_biz[biz]["rev"] += float(r.get("revenue", 0))
+        by_biz[biz]["exp"] += float(r.get("expenses", 0))
+
+    total_rev = sum(v["rev"] for v in by_biz.values())
+    total_exp = sum(v["exp"] for v in by_biz.values())
     lines = ["📊 *Аналитика за 7 дней*\n"]
-
-    for biz, records in data.items():
-        rev = 0
-        exp = 0
-        for r in records:
-            try:
-                if datetime.fromisoformat(r["date"]) >= cutoff:
-                    rev += float(r.get("revenue", 0))
-                    exp += float(r.get("expenses", 0))
-            except Exception:
-                pass
-        if rev > 0 or exp > 0:
-            profit = rev - exp
-            lines.append(f"{names.get(biz, biz)}:")
-            lines.append(f"  Выручка: {rev:,.0f} ₴")
-            lines.append(f"  Прибыль: {profit:,.0f} ₴")
-        total_rev += rev
-        total_exp += exp
-
-    lines.append(f"\n💰 *Итого:*")
-    lines.append(f"  Выручка: {total_rev:,.0f} ₴")
-    lines.append(f"  Прибыль: {total_rev - total_exp:,.0f} ₴")
-
+    for biz, vals in by_biz.items():
+        profit = vals["rev"] - vals["exp"]
+        lines.append(f"{names.get(biz, biz)}:")
+        lines.append(f"  Выручка: {vals['rev']:,.0f} ₴  |  Прибыль: {profit:,.0f} ₴")
+    lines.append(f"\n💰 *Итого:* {total_rev:,.0f} ₴ / прибыль {total_rev - total_exp:,.0f} ₴")
     if total_rev == 0:
-        lines.append("\n_(Данных пока нет — добавь записи в Аналитику)_")
+        lines.append("\n_(Данных нет — добавь записи в Аналитику)_")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -260,21 +277,126 @@ async def cmd_crm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return await deny(update)
+    text = " ".join(context.args).strip().lower()
+    # Try to read tasks from nexus_state.json (new format) or tasks.json (old)
+    state_file = BASE_DIR / "nexus_state.json"
+    if state_file.exists():
+        state = read_json(state_file, {})
+        tasks = state.get("tasks", [])
+        matched = [t for t in tasks if t.get("status") != "done" and text in t.get("title","").lower()]
+        if matched:
+            matched[0]["status"] = "done"
+            state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            await update.message.reply_text(f"✅ Задача выполнена:\n*{matched[0]['title']}*", parse_mode="Markdown")
+            return
+    await update.message.reply_text("Задача не найдена. Используй /tasks чтобы посмотреть список.")
+
+
+async def cmd_weather(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return await deny(update)
+    import urllib.request, urllib.parse
+    city = " ".join(context.args).strip() or "Kyiv"
+    api_key = get_env("OPENWEATHER_API_KEY", "").strip()
+    if not api_key:
+        return await update.message.reply_text("⚠️ OPENWEATHER_API_KEY не настроен.")
+    params = urllib.parse.urlencode({"q": city, "appid": api_key, "units": "metric", "lang": "ru"})
+    try:
+        with urllib.request.urlopen("https://api.openweathermap.org/data/2.5/weather?" + params, timeout=10) as r:
+            d = json.loads(r.read().decode())
+        temp = round(d["main"]["temp"]); feels = round(d["main"]["feels_like"])
+        desc = (d.get("weather") or [{}])[0].get("description", "")
+        wind = d.get("wind", {}).get("speed", 0)
+        await update.message.reply_text(
+            f"🌤 *{d.get('name', city)}*\n{temp}°C, ощущается {feels}°C\n{desc}, ветер {wind} м/с",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка погоды: {e}")
+
+
+async def cmd_brief(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return await deny(update)
+    await update.message.reply_text("☀️ Собираю брифинг...")
+    state_file = BASE_DIR / "nexus_state.json"
+    tasks = read_json(state_file, {}).get("tasks", [])
+    open_tasks = [t for t in tasks if t.get("status") != "done"][:5]
+    tasks_str = "\n".join(f"- {t['title']}" for t in open_tasks) or "нет задач"
+    prompt = (
+        f"Короткий утренний брифинг для Никиты. Telegram формат.\n"
+        f"Открытых задач: {len(open_tasks)}\n{tasks_str}\n"
+        "Формат: 1) фокус дня, 2) топ-3 действия. Кратко!"
+    )
+    try:
+        ai = get_openai_client()
+        resp = ai.chat.completions.create(
+            model=get_env("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        )
+        await update.message.reply_text(f"☀️ *Утренний брифинг*\n\n{resp.choices[0].message.content}", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ {e}")
+
+
+async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
+    """Периодически проверяет напоминания и отправляет уведомления."""
+    allowed = get_allowed_ids()
+    if not allowed:
+        return
+    db_file = BASE_DIR / "reminders.json"
+    raw = read_json(db_file, {})
+    reminders = raw.get("reminders", raw) if isinstance(raw, dict) else raw
+    if not isinstance(reminders, list):
+        return
+    now = datetime.now()
+    changed = False
+    for rem in reminders:
+        if rem.get("sent"):
+            continue
+        try:
+            t = datetime.fromisoformat(rem.get("time", ""))
+        except Exception:
+            continue
+        if t <= now:
+            for uid in allowed:
+                try:
+                    await context.bot.send_message(chat_id=uid, text=f"🔔 *Напоминание:*\n{rem['text']}", parse_mode="Markdown")
+                except Exception:
+                    pass
+            rem["sent"] = True
+            changed = True
+    if changed:
+        if isinstance(raw, dict):
+            raw["reminders"] = reminders
+            write_json(db_file, raw)
+        else:
+            write_json(db_file, reminders)
+
+
 async def cmd_remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return await deny(update)
     args = context.args
     if len(args) < 2:
-        return await update.message.reply_text("Формат: /remind 30 Позвонить клиенту")
+        return await update.message.reply_text("Формат: /remind 30 Позвонить клиенту\n(первое число — минут)")
     try:
         minutes = int(args[0])
     except ValueError:
         return await update.message.reply_text("Первый аргумент — количество минут (число)")
     text = " ".join(args[1:])
     remind_time = datetime.now() + timedelta(minutes=minutes)
-    reminders = read_json(REMINDERS_FILE, [])
-    reminders.append({"text": text, "time": remind_time.isoformat(), "sent": False})
-    write_json(REMINDERS_FILE, reminders)
+    db = read_json(REMINDERS_FILE, {"reminders": []})
+    if isinstance(db, list): db = {"reminders": db}
+    db.setdefault("reminders", []).append({
+        "id": datetime.now().strftime("%Y%m%d%H%M%S%f"),
+        "text": text, "time": remind_time.isoformat(),
+        "repeat": "once", "sent": False,
+    })
+    write_json(REMINDERS_FILE, db)
     await update.message.reply_text(
         f"🔔 Напоминание установлено!\n*{text}*\nВремя: {remind_time.strftime('%H:%M')}",
         parse_mode="Markdown"
@@ -389,28 +511,157 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Запуск ────────────────────────────────────────────────────────────────────
 
+async def cmd_mono(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Monobank balance via /mono."""
+    if not is_allowed(update): return await deny(update)
+    import urllib.request
+    token = get_env("MONOBANK_TOKEN", "").strip()
+    if not token:
+        await update.message.reply_text("💳 MONOBANK_TOKEN не задан в .env")
+        return
+    try:
+        req = urllib.request.Request(
+            "https://api.monobank.ua/personal/client-info",
+            headers={"X-Token": token}
+        )
+        import json as _json
+        with urllib.request.urlopen(req, timeout=10) as r:
+            info = _json.loads(r.read().decode("utf-8"))
+        accounts = info.get("accounts", [])
+        uah = next((a for a in accounts if a.get("currencyCode") == 980), accounts[0] if accounts else {})
+        balance = uah.get("balance", 0) / 100
+        credit = uah.get("creditLimit", 0) / 100
+        lines = [f"💳 *Monobank*", f"Баланс: `{balance:,.2f} грн`"]
+        if credit:
+            lines.append(f"Кредитный лимит: `{credit:,.2f} грн`")
+        lines.append(f"Карт: {len(accounts)}")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка Monobank: {e}")
+
+
+async def weekly_digest(context):
+    """Send weekly AI-generated business summary every Monday at 09:00."""
+    import urllib.request, urllib.parse
+    chat_id = get_env("TELEGRAM_CHAT_ID", "").strip()
+    if not chat_id:
+        # fallback: try TELEGRAM_ALLOWED_USER_IDS
+        allowed = get_env("TELEGRAM_ALLOWED_USER_IDS", "").strip()
+        chat_id = allowed.split(",")[0].strip() if allowed else ""
+    if not chat_id:
+        return
+
+    tasks = read_json(BASE_DIR / "nexus_state.json", {}).get("tasks", [])
+    open_t = [t for t in tasks if t.get("status") != "done"]
+    analytics = read_json(ANALYTICS_FILE, {})
+    records = analytics.get("records", []) if isinstance(analytics.get("records"), list) else []
+    week_ago = (datetime.utcnow() - timedelta(days=7)).date().isoformat()
+    week_records = [r for r in records if r.get("date", "") >= week_ago]
+    revenue = sum(r.get("revenue", r.get("amount", 0)) for r in week_records)
+
+    crm = read_json(CRM_FILE, {})
+    clients = crm.get("clients", []) if isinstance(crm, dict) else []
+
+    prompt = (
+        f"Еженедельный дайджест NEXUS. Никита, вот сводка за неделю:\n"
+        f"- Открытых задач: {len(open_t)}\n"
+        f"- Выручка (7 дней): {revenue:.0f} UAH\n"
+        f"- Записей аналитики за неделю: {len(week_records)}\n"
+        f"- Клиентов в CRM: {len(clients)}\n\n"
+        "Напиши краткий мотивирующий дайджест с ключевыми метриками и советом на неделю. "
+        "Telegram-формат, до 300 символов."
+    )
+    try:
+        ai = get_openai_client()
+        resp = ai.chat.completions.create(
+            model=get_env("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
+            max_tokens=400,
+        )
+        text = resp.choices[0].message.content
+    except Exception:
+        text = (
+            f"📊 Итоги недели:\n"
+            f"• Задач открыто: {len(open_t)}\n"
+            f"• Выручка: {revenue:.0f} UAH\n"
+            f"• Клиентов: {len(clients)}"
+        )
+
+    try:
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text=f"📅 *Еженедельный дайджест NEXUS*\n\n{text}",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+
+
+async def cmd_mono(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Monobank balance via /mono."""
+    if not is_allowed(update): return await deny(update)
+    import urllib.request as _req
+    token = get_env("MONOBANK_TOKEN", "").strip()
+    if not token:
+        await update.message.reply_text("💳 MONOBANK_TOKEN не задан в .env")
+        return
+    try:
+        req = _req.Request(
+            "https://api.monobank.ua/personal/client-info",
+            headers={"X-Token": token}
+        )
+        with _req.urlopen(req, timeout=10) as r:
+            info = json.loads(r.read().decode("utf-8"))
+        accounts = info.get("accounts", [])
+        uah = next((a for a in accounts if a.get("currencyCode") == 980), accounts[0] if accounts else {})
+        balance = uah.get("balance", 0) / 100
+        credit = uah.get("creditLimit", 0) / 100
+        lines = ["💳 *Monobank*", f"Баланс: `{balance:,.2f} грн`"]
+        if credit:
+            lines.append(f"Кредитный лимит: `{credit:,.2f} грн`")
+        lines.append(f"Карт: {len(accounts)}")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка Monobank: {e}")
+
+
 async def post_init(application):
     await application.bot.set_my_commands([
-        BotCommand("start", "Запустить NEXUS"),
-        BotCommand("tasks", "Список задач"),
-        BotCommand("addtask", "Добавить задачу"),
-        BotCommand("status", "Статус системы"),
+        BotCommand("start",     "Запустить NEXUS"),
+        BotCommand("tasks",     "Список задач"),
+        BotCommand("addtask",   "Добавить задачу"),
+        BotCommand("done",      "Отметить задачу выполненной"),
+        BotCommand("status",    "Статус системы"),
         BotCommand("analytics", "Аналитика за 7 дней"),
-        BotCommand("crm", "Последние клиенты"),
-        BotCommand("remind", "Установить напоминание"),
+        BotCommand("crm",       "Последние клиенты"),
+        BotCommand("brief",     "Утренний брифинг"),
+        BotCommand("weather",   "Погода"),
+        BotCommand("remind",    "Установить напоминание"),
+        BotCommand("mono",      "Баланс Monobank"),
     ])
+    application.job_queue.run_repeating(check_reminders, interval=60, first=10)
+    from datetime import time as _time
+    application.job_queue.run_daily(
+        weekly_digest,
+        time=_time(hour=9, minute=0),
+        days=(0,),  # 0 = Monday
+    )
 
 
 def main():
     token = get_telegram_token()
     app = Application.builder().token(token).post_init(post_init).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("tasks", cmd_tasks))
-    app.add_handler(CommandHandler("addtask", cmd_addtask))
-    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("tasks",     cmd_tasks))
+    app.add_handler(CommandHandler("addtask",   cmd_addtask))
+    app.add_handler(CommandHandler("done",      cmd_done))
+    app.add_handler(CommandHandler("status",    cmd_status))
     app.add_handler(CommandHandler("analytics", cmd_analytics))
-    app.add_handler(CommandHandler("crm", cmd_crm))
-    app.add_handler(CommandHandler("remind", cmd_remind))
+    app.add_handler(CommandHandler("crm",       cmd_crm))
+    app.add_handler(CommandHandler("brief",     cmd_brief))
+    app.add_handler(CommandHandler("weather",   cmd_weather))
+    app.add_handler(CommandHandler("remind",    cmd_remind))
+    app.add_handler(CommandHandler("mono",      cmd_mono))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

@@ -1,0 +1,50 @@
+services:
+  - type: web
+    name: nexus-ai
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --keep-alive 5 nexus_web:app
+    envVars:
+      - key: AI_PROVIDER
+        value: openai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_TTS_MODEL
+        value: tts-1
+      - key: OPENAI_TTS_VOICE
+        value: onyx
+      - key: WEB_PASSWORD
+        generateValue: true
+      - key: WEB_SESSION_SECRET
+        generateValue: true
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_USER_IDS
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: GMAIL
+        sync: false
+      - key: APP_PASSWORD
+        sync: false
+      - key: OPENWEATHER_API_KEY
+        sync: false
+      - key: DEFAULT_WEATHER_CITY
+        value: Kyiv
+      - key: NOVA_POSHTA_API_KEY
+        sync: false
+      - key: MONOBANK_TOKEN
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_FILE
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        value: primary
+      - key: GOOGLE_SPREADSHEET_ID
+        sync: false
+      - key: NEXUS_DATA_DIR
+        value: /app
+    disk:
+      name: nexus-data
+      mountPath

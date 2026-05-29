@@ -10,3 +10,6 @@ python-docx
 python-dotenv
 python-telegram-bot[job-queue]
 gunicorn
+pyotp
+qrcode[pil]
+Pillow

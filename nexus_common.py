@@ -51,15 +51,25 @@ def ensure_env_keys():
             existing[key.strip()] = value.strip()
 
     defaults = {
-        "AI_PROVIDER": "ollama",
-        "OLLAMA_MODEL": "qwen2.5:3b",
-        "OLLAMA_URL": "http://127.0.0.1:11434/api/chat",
+        "AI_PROVIDER": "openai",
         "OPENAI_API_KEY": "",
         "OPENAI_MODEL": "gpt-4o-mini",
-        "TELEGRAM_TOKEN": "",
+        "OPENAI_TTS_MODEL": "tts-1",
+        "OPENAI_TTS_VOICE": "onyx",
+        "OLLAMA_MODEL": "qwen2.5:3b",
+        "OLLAMA_URL": "http://127.0.0.1:11434/api/chat",
         "WEB_PASSWORD": secrets.token_urlsafe(18),
         "WEB_SESSION_SECRET": secrets.token_urlsafe(48),
+        "PORT": "5001",
+        "TELEGRAM_TOKEN": "",
         "TELEGRAM_ALLOWED_USER_IDS": "",
+        "GMAIL": "",
+        "APP_PASSWORD": "",
+        "OPENWEATHER_API_KEY": "",
+        "DEFAULT_WEATHER_CITY": "Kyiv",
+        "NOVA_POSHTA_API_KEY": "",
+        "MONOBANK_TOKEN": "",
+        "TELEGRAM_CHAT_ID": "",
     }
 
     changed = False
@@ -169,9 +179,16 @@ DEFAULT_PROFILE = {
 
 def build_system_prompt(profile=None):
     profile = profile or DEFAULT_PROFILE
-    return f"""\u0422\u044b NEXUS - \u043f\u0440\u0438\u0432\u0430\u0442\u043d\u044b\u0439 AI-\u043f\u043e\u043c\u043e\u0449\u043d\u0438\u043a.
-\u0418\u043d\u0444\u043e\u0440\u043c\u0430\u0446\u0438\u044f \u043e \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u0435:
-- \u0418\u043c\u044f: {profile['name']}
-- \u0411\u0438\u0437\u043d\u0435\u0441: {profile['business']}
-- \u041b\u043e\u043a\u0430\u0446\u0438\u044f: {profile['location']}
-\u041e\u0442\u0432\u0435\u0447\u0430\u0439 \u043d\u0430 \u0440\u0443\u0441\u0441\u043a\u043e\u043c \u044f\u0437\u044b\u043a\u0435. \u041e\u0431\u0440\u0430\u0449\u0430\u0439\u0441\u044f \u043a \u043d\u0435\u043c\u0443 \u043f\u043e \u0438\u043c\u0435\u043d\u0438."""
+    name     = profile.get("name", "Никита")
+    business = profile.get("business", "бизнес")
+    location = profile.get("location", "Украина")
+    city     = profile.get("city", "")
+    city_str = f", город {city}" if city else ""
+    return (
+        f"Ты NEXUS — персональный AI-центр управления бизнесом.\n"
+        f"Хозяин: {name}. Бизнес: {business}. Локация: {location}{city_str}.\n"
+        f"Отвечай на русском языке. Обращайся по имени {name}.\n"
+        "Ты умеешь: управлять задачами, CRM, аналитикой, напоминаниями, email, погодой, "
+        "трекингом Новой Почты, выставлением счётов и многим другим.\n"
+        "Будь кратким, конкретным и деловым."
+    )
