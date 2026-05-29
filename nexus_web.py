@@ -541,21 +541,55 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
       <!-- CRM -->
       <div class="page" id="crmPage">
         <div class="stack">
-          <div class="card"><h3>Клиенты</h3>
-            <div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:8px">
-              <input class="field" id="crmName" placeholder="Имя клиента" style="margin:0">
-              <input class="field" id="crmPhone" placeholder="Телефон" style="margin:0;max-width:150px">
-              <select class="field" id="crmBusiness" style="margin:0;max-width:160px"><option value="obshchepit">Общепит</option><option value="akva">Аква бизнес</option><option value="prodvizhenie">Продвижение</option><option value="other">Другое</option></select>
-              <input class="field" id="crmNote" placeholder="Заметка" style="margin:0">
-              <button class="btn" onclick="addClient()">Добавить</button>
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <h3 style="margin:0">👥 Клиенты</h3>
+              <div style="display:flex;gap:6px">
+                <button class="btn secondary sm" id="crmViewList" onclick="setCrmView('list')" style="font-size:11px">☰ Список</button>
+                <button class="btn secondary sm" id="crmViewPipeline" onclick="setCrmView('pipeline')" style="font-size:11px">📋 Pipeline</button>
+              </div>
             </div>
-            <input class="field" id="crmSearch" placeholder="Поиск по имени, телефону..." oninput="renderCrm()">
+            <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
+              <input class="field" id="crmName" placeholder="Имя клиента" style="margin:0">
+              <input class="field" id="crmPhone" placeholder="Телефон" style="margin:0;max-width:140px">
+              <select class="field" id="crmBusiness" style="margin:0;max-width:155px">
+                <option value="obshchepit">🍽 Общепит</option>
+                <option value="akva">💧 Аква бизнес</option>
+                <option value="prodvizhenie">📣 Продвижение</option>
+                <option value="other">Другое</option>
+              </select>
+              <select class="field" id="crmStatus" style="margin:0;max-width:120px">
+                <option value="lead">🔵 Лид</option>
+                <option value="active">🟡 Активный</option>
+                <option value="done">🟢 Завершён</option>
+                <option value="lost">🔴 Потерян</option>
+              </select>
+              <input class="field" id="crmNote" placeholder="Заметка" style="margin:0">
+              <button class="btn" onclick="addClient()">+ Добавить</button>
+            </div>
+            <input class="field" id="crmSearch" placeholder="🔍 Поиск по имени, телефону, бизнесу..." oninput="renderCrm()" style="margin-bottom:10px">
             <div id="crmTable"></div>
           </div>
           <div class="card" id="clientDetail" style="display:none">
-            <h3 id="clientDetailName">Клиент</h3>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <h3 id="clientDetailName" style="margin:0">Клиент</h3>
+              <button class="btn secondary sm" onclick="$('clientDetail').style.display='none'">✕</button>
+            </div>
+            <div style="display:flex;gap:8px;margin:10px 0;flex-wrap:wrap">
+              <span id="clientDetailPhone" class="item-meta"></span>
+              <span id="clientDetailBiz" class="item-meta"></span>
+              <select class="field" id="clientStatusSelect" onchange="updateClientStatus()" style="width:130px;margin:0;font-size:12px">
+                <option value="lead">🔵 Лид</option>
+                <option value="active">🟡 Активный</option>
+                <option value="done">🟢 Завершён</option>
+                <option value="lost">🔴 Потерян</option>
+              </select>
+            </div>
             <div id="clientNotes" class="list" style="margin-bottom:10px"></div>
-            <div class="row"><textarea class="field" id="newNoteText" placeholder="Добавить заметку..." rows="2" style="margin:0"></textarea><button class="btn" onclick="addNote()">+</button></div>
+            <div class="row">
+              <textarea class="field" id="newNoteText" placeholder="Добавить заметку..." rows="2" style="margin:0"></textarea>
+              <button class="btn" onclick="addNote()">+</button>
+            </div>
           </div>
         </div>
       </div>
@@ -760,12 +794,35 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
       <!-- CALENDAR -->
       <div class="page" id="calendarPage">
         <div class="stack">
-          <div class="card"><h3>Сьогодні — <span id="calTodayDate"></span></h3>
-            <div id="calTodayEvents" class="list"></div>
-          </div>
-          <div class="card"><h3>Найближчі події</h3>
-            <div class="toolbar"><button class="btn secondary sm" onclick="loadCalendar()">🔄 Оновити</button></div>
-            <div id="calUpcoming" class="list"></div>
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+              <h3 style="margin:0">📅 <span id="calTodayDate"></span></h3>
+              <div style="display:flex;gap:6px">
+                <button class="btn secondary sm" id="calViewGrid" onclick="setCalView('grid')">🗓 Місяць</button>
+                <button class="btn secondary sm" id="calViewList" onclick="setCalView('list')">📋 Список</button>
+                <button class="btn secondary sm" onclick="loadCalendar()">🔄</button>
+              </div>
+            </div>
+            <!-- Grid view -->
+            <div id="calGridView">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+                <button class="btn secondary sm" onclick="calNavMonth(-1)">◀</button>
+                <span id="calMonthLabel" style="font-weight:700;color:var(--cyan);font-size:15px"></span>
+                <button class="btn secondary sm" onclick="calNavMonth(1)">▶</button>
+              </div>
+              <div id="calGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;font-size:12px"></div>
+              <div id="calDayDetail" style="margin-top:12px;display:none">
+                <div style="font-weight:600;color:var(--cyan);margin-bottom:6px" id="calDayDetailTitle"></div>
+                <div id="calDayDetailList"></div>
+              </div>
+            </div>
+            <!-- List view (today + upcoming) -->
+            <div id="calListView" style="display:none">
+              <div style="font-weight:600;color:var(--accent);margin-bottom:6px">Сьогодні</div>
+              <div id="calTodayEvents" class="list"></div>
+              <div style="font-weight:600;color:var(--accent);margin:10px 0 6px">Найближчі події</div>
+              <div id="calUpcoming" class="list"></div>
+            </div>
           </div>
           <div class="card"><h3>Додати подію</h3>
             <input class="field" id="calTitle" placeholder="Назва події">
@@ -1196,37 +1253,84 @@ function runCommand(){
 }
 
 // ── CRM ───────────────────────────────────────────────────────────────────────
+var _crmView='list';
+function setCrmView(v){
+  _crmView=v;
+  ['list','pipeline'].forEach(function(k){
+    var b=$('crmView'+k.charAt(0).toUpperCase()+k.slice(1));
+    if(b){b.style.background=k===v?'var(--cyan)':'';b.style.color=k===v?'#041014':'';}
+  });
+  renderCrm();
+}
 function loadCrm(){api('/crm').then(function(d){crmClients=d.clients||[];renderCrm()})}
 function renderCrm(){
   var q=($('crmSearch')?.value||'').toLowerCase();
-  var list=crmClients.filter(function(c){return!q||c.name.toLowerCase().indexOf(q)>=0||(c.phone||'').indexOf(q)>=0});
-  if(!list.length){$('crmTable').innerHTML='<div class="item-meta">Клиентов нет. Добавьте первого.</div>';return}
-  var html='<table class="tbl"><thead><tr><th>Имя</th><th>Телефон</th><th>Бизнес</th><th>Заметок</th><th></th></tr></thead><tbody>';
+  var list=crmClients.filter(function(c){return!q||c.name.toLowerCase().indexOf(q)>=0||(c.phone||'').indexOf(q)>=0||(c.business||'').indexOf(q)>=0});
+  if(_crmView==='pipeline'){renderCrmPipeline(list);return;}
+  if(!list.length){$('crmTable').innerHTML='<div class="item-meta">Клиентов нет.</div>';return;}
+  var sLabel={lead:'🔵 Лид',active:'🟡 Активный',done:'🟢 Завершён',lost:'🔴 Потерян'};
+  var sColor={lead:'#35d7e9',active:'#f5bd63',done:'#48e08c',lost:'#ff6b6b'};
+  var bizIcon={obshchepit:'🍽',akva:'💧',prodvizhenie:'📣',other:'📌'};
+  var html='<table class="tbl"><thead><tr><th>Имя</th><th>Телефон</th><th>Бизнес</th><th>Статус</th><th>Заметок</th><th></th></tr></thead><tbody>';
   list.forEach(function(c){
-    html+='<tr><td><b>'+esc(c.name)+'</b></td><td>'+esc(c.phone||'—')+'</td><td>'+esc(c.business||'—')+'</td>'
+    var st=c.status||'lead';
+    html+='<tr>'
+      +'<td><b>'+esc(c.name)+'</b></td>'
+      +'<td>'+esc(c.phone||'—')+'</td>'
+      +'<td>'+(bizIcon[c.business]||'📌')+' '+esc(c.business||'—')+'</td>'
+      +'<td><span style="color:'+sColor[st]+'">'+sLabel[st]+'</span></td>'
       +'<td>'+((c.notes||[]).length)+'</td>'
-      +'<td><button class="btn secondary sm" onclick="openClient(\''+c.id+'\')">Открыть</button></td></tr>';
+      +'<td><button class="btn secondary sm" onclick="openClient(''+c.id+'')">Открыть</button></td>'
+      +'</tr>';
   });
-  html+='</tbody></table>';$('crmTable').innerHTML=html;
+  html+='</tbody></table>';
+  $('crmTable').innerHTML=html;
+}
+function renderCrmPipeline(list){
+  var stages=[{key:'lead',label:'🔵 Лиды',color:'#35d7e9'},{key:'active',label:'🟡 Активные',color:'#f5bd63'},{key:'done',label:'🟢 Завершённые',color:'#48e08c'},{key:'lost',label:'🔴 Потерянные',color:'#ff6b6b'}];
+  var html='<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;overflow-x:auto">';
+  stages.forEach(function(s){
+    var cols=list.filter(function(c){return(c.status||'lead')===s.key});
+    html+='<div style="background:var(--bg2);border-radius:12px;padding:10px;min-height:100px">';
+    html+='<div style="font-size:11px;font-weight:700;color:'+s.color+';margin-bottom:8px;text-transform:uppercase">'+s.label+' ('+cols.length+')</div>';
+    cols.forEach(function(c){
+      html+='<div onclick="openClient(''+c.id+'')" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;cursor:pointer" onmouseover="this.style.borderColor=''+s.color+''" onmouseout="this.style.borderColor='var(--border)'">'
+        +'<div style="font-weight:600;font-size:13px">'+esc(c.name)+'</div>'
+        +'<div style="font-size:11px;color:var(--muted)">'+esc(c.phone||'')+'</div>'
+        +'</div>';
+    });
+    html+='</div>';
+  });
+  html+='</div>';
+  $('crmTable').innerHTML=html;
 }
 function addClient(){
-  var name=($('crmName').value||'').trim();if(!name){alertMsg('Укажите имя клиента',false);return}
-  var data={name:name,phone:$('crmPhone').value.trim(),business:$('crmBusiness').value,note:$('crmNote').value.trim()};
+  var name=($('crmName').value||'').trim();if(!name){alertMsg('Укажите имя клиента',false);return;}
+  var data={name:name,phone:$('crmPhone').value.trim(),business:$('crmBusiness').value,status:$('crmStatus')?$('crmStatus').value:'lead',note:$('crmNote').value.trim()};
   api('/crm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)})
-  .then(function(d){alertMsg(d.success?'Клиент добавлен':(d.error||'Ошибка'),!!d.success);if(d.success){$('crmName').value='';$('crmPhone').value='';$('crmNote').value='';loadCrm();loadStats()}});
+  .then(function(d){alertMsg(d.success?'✅ Клиент добавлен':(d.error||'Ошибка'),!!d.success);if(d.success){$('crmName').value='';$('crmPhone').value='';$('crmNote').value='';loadCrm();loadStats();}});
 }
 function openClient(id){
   currentClientId=id;var c=crmClients.find(function(x){return x.id===id});if(!c)return;
-  $('clientDetailName').textContent=c.name+' — заметки';
+  $('clientDetailName').textContent=c.name;
+  if($('clientDetailPhone'))$('clientDetailPhone').textContent=c.phone||'';
+  if($('clientDetailBiz'))$('clientDetailBiz').textContent={obshchepit:'🍽 Общепит',akva:'💧 Аква',prodvizhenie:'📣 Продвижение',other:'📌'}[c.business]||c.business||'';
+  if($('clientStatusSelect'))$('clientStatusSelect').value=c.status||'lead';
   $('clientDetail').style.display='';
+  $('clientDetail').scrollIntoView({behavior:'smooth',block:'nearest'});
   $('clientNotes').innerHTML=(c.notes||[]).map(function(n){return'<div class="item"><div class="item-meta">'+esc(n.text)+'</div><div style="color:var(--muted);font-size:11px">'+esc(n.ts||'')+'</div></div>'}).join('')||'<div class="item-meta">Нет заметок.</div>';
+}
+function updateClientStatus(){
+  if(!currentClientId)return;
+  var ns=$('clientStatusSelect').value;
+  api('/crm/'+currentClientId,{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({status:ns})})
+  .then(function(d){if(d.success){alertMsg('✅ Статус обновлён',true);loadCrm();}else alertMsg('❌ '+(d.error||'Ошибка'),false);});
 }
 function addNote(){
   var text=($('newNoteText').value||'').trim();if(!text||!currentClientId)return;
-  api('/crm/note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:currentClientId,note:text})})
-  .then(function(d){alertMsg(d.success?'Заметка добавлена':(d.error||'Ошибка'),!!d.success);if(d.success){$('newNoteText').value='';loadCrm();setTimeout(function(){openClient(currentClientId)},300)}});
+  api('/crm/note',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({client_id:currentClientId,note:text})})
+  .then(function(d){alertMsg(d.success?'✅ Заметка добавлена':(d.error||'Ошибка'),!!d.success);if(d.success){$('newNoteText').value='';loadCrm();setTimeout(function(){openClient(currentClientId)},300);}});
 }
-
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function loadAnalytics(){
   var days=parseInt(($('an_chart_period')||{value:'7'}).value||7);
@@ -1638,18 +1742,86 @@ function loadMono(){
 }
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
+var _calView='grid';
+var _calYear=new Date().getFullYear();
+var _calMonth=new Date().getMonth();
+var _calEvents=[];
+
+function setCalView(v){
+  _calView=v;
+  $('calGridView').style.display=v==='grid'?'':'none';
+  $('calListView').style.display=v==='list'?'':'none';
+  $('calViewGrid').className='btn '+(v==='grid'?'':'secondary ')+'sm';
+  $('calViewList').className='btn '+(v==='list'?'':'secondary ')+'sm';
+  if(v==='grid')renderCalGrid();
+}
+function calNavMonth(d){
+  _calMonth+=d;
+  if(_calMonth>11){_calMonth=0;_calYear++;}
+  if(_calMonth<0){_calMonth=11;_calYear--;}
+  renderCalGrid();
+}
+function renderCalGrid(){
+  var months=['Січень','Лютий','Березень','Квітень','Травень','Червень','Липень','Серпень','Вересень','Жовтень','Листопад','Грудень'];
+  $('calMonthLabel').textContent=months[_calMonth]+' '+_calYear;
+  var today=new Date();
+  var todayStr=today.toISOString().slice(0,10);
+  var firstDay=new Date(_calYear,_calMonth,1).getDay();
+  firstDay=(firstDay+6)%7; // Mon=0
+  var daysInMonth=new Date(_calYear,_calMonth+1,0).getDate();
+  var evMap={};
+  _calEvents.forEach(function(e){
+    if(!evMap[e.date])evMap[e.date]=[];
+    evMap[e.date].push(e);
+  });
+  var html='<div style="text-align:center;font-weight:700;color:var(--text-muted);padding:4px">Пн</div>'
+    +'<div style="text-align:center;font-weight:700;color:var(--text-muted);padding:4px">Вт</div>'
+    +'<div style="text-align:center;font-weight:700;color:var(--text-muted);padding:4px">Ср</div>'
+    +'<div style="text-align:center;font-weight:700;color:var(--text-muted);padding:4px">Чт</div>'
+    +'<div style="text-align:center;font-weight:700;color:var(--text-muted);padding:4px">Пт</div>'
+    +'<div style="text-align:center;font-weight:700;color:var(--cyan);padding:4px">Сб</div>'
+    +'<div style="text-align:center;font-weight:700;color:var(--cyan);padding:4px">Нд</div>';
+  for(var i=0;i<firstDay;i++)html+='<div></div>';
+  for(var d=1;d<=daysInMonth;d++){
+    var dateStr=_calYear+'-'+String(_calMonth+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');
+    var isToday=dateStr===todayStr;
+    var evs=evMap[dateStr]||[];
+    var dots=evs.slice(0,3).map(function(e){return'<div style="width:6px;height:6px;border-radius:50%;background:var(--cyan);margin:1px auto"></div>';}).join('');
+    var bg=isToday?'var(--cyan)':'evs.length?rgba(53,215,233,0.12):transparent';
+    if(isToday)bg='var(--cyan)';
+    else if(evs.length)bg='rgba(53,215,233,0.12)';
+    else bg='transparent';
+    var col=isToday?'#000':'var(--text)';
+    html+='<div onclick="calDayClick(\''+dateStr+'\','+JSON.stringify(evs).replace(/"/g,'&quot;')+')" style="cursor:pointer;text-align:center;padding:6px 2px;border-radius:8px;background:'+bg+';color:'+col+';border:1px solid '+(isToday?'var(--cyan)':'transparent')+';transition:background 0.2s" onmouseover="this.style.background=\'rgba(53,215,233,0.2)\'" onmouseout="this.style.background=\''+bg+'\'">'
+      +'<div style="font-weight:'+(isToday?'700':'400')+'">'+d+'</div>'
+      +(evs.length?'<div style="display:flex;flex-wrap:wrap;justify-content:center;margin-top:2px">'+dots+'</div>':'')
+      +'</div>';
+  }
+  $('calGrid').innerHTML=html;
+  $('calDayDetail').style.display='none';
+}
+function calDayClick(dateStr,evs){
+  if(!evs.length){$('calDate').value=dateStr;$('calDayDetail').style.display='none';return;}
+  $('calDayDetailTitle').textContent='📅 '+dateStr;
+  $('calDayDetailList').innerHTML=evs.map(calEventHTML).join('');
+  $('calDate').value=dateStr;
+  $('calDayDetail').style.display='';
+}
 function loadCalendar(){
   var today=new Date();
   $('calTodayDate').textContent=today.toLocaleDateString('uk-UA',{weekday:'long',day:'numeric',month:'long'});
   if($('calDate')&&!$('calDate').value)$('calDate').value=today.toISOString().slice(0,10);
   api('/calendar').then(function(d){
-    var events=d.events||[];
+    _calEvents=d.events||[];
     var todayStr=today.toISOString().slice(0,10);
-    var todayEvs=events.filter(function(e){return e.date===todayStr});
-    var upcoming=events.filter(function(e){return e.date>todayStr}).slice(0,10);
-    $('calTodayEvents').innerHTML=todayEvs.length?todayEvs.map(calEventHTML).join(''):'<div class="item-meta">Сьогодні подій немає</div>';
-    $('calUpcoming').innerHTML=upcoming.length?upcoming.map(calEventHTML).join(''):'<div class="item-meta">Найближчих подій немає</div>';
+    var todayEvs=_calEvents.filter(function(e){return e.date===todayStr});
+    var upcoming=_calEvents.filter(function(e){return e.date>todayStr}).slice(0,10);
+    if($('calTodayEvents'))$('calTodayEvents').innerHTML=todayEvs.length?todayEvs.map(calEventHTML).join(''):'<div class="item-meta">Сьогодні подій немає</div>';
+    if($('calUpcoming'))$('calUpcoming').innerHTML=upcoming.length?upcoming.map(calEventHTML).join(''):'<div class="item-meta">Найближчих подій немає</div>';
+    if(_calView==='grid')renderCalGrid();
   });
+  // default grid view active
+  setCalView(_calView);
 }
 function calEventHTML(e){
   return'<div class="item"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="item-title">'+esc(e.title)+'</div>'+(e.desc?'<div class="item-meta">'+esc(e.desc)+'</div>':'')+'</div><div style="text-align:right"><div class="badge open">'+esc(e.date)+'</div>'+(e.time?'<div class="item-meta">'+esc(e.time)+'</div>':'')+'</div></div>'
@@ -1658,11 +1830,11 @@ function calEventHTML(e){
 function addCalEvent(){
   var title=($('calTitle').value||'').trim();var date=$('calDate').value;var time=$('calTime').value;var desc=($('calDesc').value||'').trim();
   if(!title||!date)return alertMsg('Заповніть назву та дату',false);
-  api('/calendar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,date:date,time:time,desc:desc})})
+  api('/calendar',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({title:title,date:date,time:time,desc:desc})})
   .then(function(d){if(d.success){$('calTitle').value='';$('calDesc').value='';alertMsg('Подія додана!',true);loadCalendar()}else alertMsg(d.error||'Помилка',false)});
 }
 function deleteCalEvent(id){
-  api('/calendar/'+id,{method:'DELETE',headers:{'Content-Type':'application/json'}})
+  api('/calendar/'+id,{method:'DELETE',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken}})
   .then(function(){loadCalendar()});
 }
 
@@ -1736,6 +1908,8 @@ setInterval(function(){
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadStats();loadHistory();loadDashboard();
+// Auto-refresh dashboard every 45 seconds
+setInterval(function(){if(currentPage==='dashboard'){loadStats();loadDashboard();}},45000);
 updateNotifStatus();
 var an_dateEl=$('an_date');if(an_dateEl)an_dateEl.value=new Date().toISOString().slice(0,10);
 setInterval(loadStats,10000);
@@ -2769,6 +2943,31 @@ def monobank():
 
 # ── Backup / Restore / Export ─────────────────────────────────────────────────
 
+@app.route("/crm/<client_id>", methods=["PATCH"])
+def crm_update(client_id):
+    """Update client fields (status, phone, etc.)"""
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    if not csrf_ok(): return jsonify({"error": "CSRF"}), 403
+    clients = load_json(CRM_FILE, [])
+    data = request.get_json(silent=True) or {}
+    allowed = {"status", "name", "phone", "business", "note"}
+    updated = False
+    for c in clients:
+        if c.get("id") == client_id:
+            for k, v in data.items():
+                if k in allowed:
+                    c[k] = v
+            c["updated"] = datetime.utcnow().isoformat() + "Z"
+            updated = True
+            break
+    if not updated:
+        return jsonify({"success": False, "error": "Client not found"})
+    save_json(CRM_FILE, clients)
+    audit("crm_update", f"id={client_id} fields={list(data.keys())}", user=current_user()["username"])
+    return jsonify({"success": True})
+
+
+
 @app.route("/backup")
 def backup_download():
     """Download all JSON data as a single .zip archive."""
@@ -2787,43 +2986,43 @@ def backup_download():
     ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, fpath in data_files:
-            if fpath.exists():
-                zf.write(str(fpath), arcname=name)
+            from pathlib import Path as _P
+            if _P(fpath).exists():
+                zf.write(fpath, name)
     buf.seek(0)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
-    audit("backup_download", f"ts={ts}", user=current_user()["username"])
-    return Response(
-        buf.getvalue(),
-        mimetype="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=nexus_backup_{ts}.zip"}
-    )
+    from flask import send_file
+    return send_file(buf, mimetype="application/zip",
+                     as_attachment=True, download_name="nexus_backup.zip")
 
 
 @app.route("/restore", methods=["POST"])
-def restore_upload():
-    """Restore data from a .zip backup file."""
+def restore_backup():
+    """Restore JSON data from uploaded .zip archive."""
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     import zipfile, io
     f = request.files.get("file")
     if not f:
         return jsonify({"success": False, "error": "No file uploaded"})
+    file_map = {
+        "nexus_state.json":    STATE_FILE,
+        "crm_data.json":       CRM_FILE,
+        "analytics_data.json": ANALYTICS_FILE,
+        "reminders.json":      REMINDERS_FILE,
+        "calendar_data.json":  CALENDAR_FILE,
+        "audit_log.json":      AUDIT_FILE,
+        "nexus_memory.json":   MEMORY_FILE,
+        "nexus_profile.json":  PROFILE_FILE,
+    }
     try:
-        zf = zipfile.ZipFile(io.BytesIO(f.read()))
-        allowed = {
-            "nexus_state.json":    STATE_FILE,
-            "crm_data.json":       CRM_FILE,
-            "analytics_data.json": ANALYTICS_FILE,
-            "reminders.json":      REMINDERS_FILE,
-            "calendar_data.json":  CALENDAR_FILE,
-            "nexus_memory.json":   MEMORY_FILE,
-            "nexus_profile.json":  PROFILE_FILE,
-        }
-        restored = []
-        for name in zf.namelist():
-            if name in allowed:
-                data = json.loads(zf.read(name).decode("utf-8"))
-                save_json(allowed[name], data)
-                restored.append(name)
+        with zipfile.ZipFile(io.BytesIO(f.read())) as zf:
+            restored = []
+            for name in zf.namelist():
+                if name in file_map:
+                    data = json.loads(zf.read(name).decode("utf-8"))
+                    from pathlib import Path as _P
+                    _P(file_map[name]).write_text(
+                        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    restored.append(name)
         audit("restore", f"files={restored}", user=current_user()["username"])
         return jsonify({"success": True, "restored": restored})
     except Exception as e:
@@ -2832,32 +3031,49 @@ def restore_upload():
 
 @app.route("/export")
 def export_data():
-    """Export all data as a single JSON."""
+    """Export all data as a single JSON bundle."""
     if not logged_in(): return jsonify({"error": "Login required."}), 401
-    export = {
-        "exported_at": datetime.utcnow().isoformat() + "Z",
-        "version": "2.1",
-        "tasks":     load_json(STATE_FILE, {}).get("tasks", []),
+    bundle = {
+        "state":     load_json(STATE_FILE, {}),
         "crm":       load_json(CRM_FILE, []),
         "analytics": load_json(ANALYTICS_FILE, {}),
         "reminders": load_json(REMINDERS_FILE, []),
         "calendar":  load_json(CALENDAR_FILE, []),
+        "audit":     load_json(AUDIT_FILE, []),
+        "memory":    load_json(MEMORY_FILE, {}),
         "profile":   load_json(PROFILE_FILE, {}),
     }
-    audit("export", f"tasks={len(export['tasks'])} crm={len(export['crm'])}", user=current_user()["username"])
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
-    return Response(
-        json.dumps(export, ensure_ascii=False, indent=2),
-        mimetype="application/json",
-        headers={"Content-Disposition": f"attachment; filename=nexus_export_{ts}.json"}
+    resp = app.response_class(
+        response=json.dumps(bundle, ensure_ascii=False, indent=2),
+        mimetype="application/json"
     )
+    resp.headers["Content-Disposition"] = "attachment; filename=nexus_export.json"
+    return resp
 
-@app.route("/calendar", methods=["GET", "POST"])
+
+@app.route("/crm/<client_id>", methods=["PATCH"])
+def crm_update_client(client_id):
+    """Update client fields (status, name, phone, etc.)."""
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    data = request.get_json(silent=True) or {}
+    clients = load_json(CRM_FILE, [])
+    for c in clients:
+        if c.get("id") == client_id:
+            for k, v in data.items():
+                if k not in ("id", "created"):
+                    c[k] = v
+            break
+    save_json(CRM_FILE, clients)
+    audit("crm_update", f"id={client_id} fields={list(data.keys())}", user=current_user()["username"])
+    return jsonify({"success": True})
+
+
+@app.route("/calendar", methods=["GET","POST"])
 def calendar():
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     events = load_json(CALENDAR_FILE, [])
     if request.method == "GET":
-        events_sorted = sorted(events, key=lambda e: (e.get("date",""), e.get("time","")))
+        events_sorted = sorted(events, key=lambda e: e.get("date",""))
         return jsonify({"events": events_sorted})
     data = request.get_json(silent=True) or {}
     title = str(data.get("title","")).strip()
@@ -2923,6 +3139,6 @@ def rag_docs():
 
 if __name__ == "__main__":
     ensure_env_keys()
-    port = int(get_env("PORT", "10000"))
+    port = int(get_env("PORT", "5001"))
     print("NEXUS Web starting...")
     app.run(host="0.0.0.0", port=port, debug=False)
