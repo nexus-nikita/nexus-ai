@@ -510,18 +510,44 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
       <!-- TASKS -->
       <div class="page" id="tasksPage">
         <div class="grid2">
-          <div class="card"><h3>Задачи</h3>
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+              <h3 style="margin:0">Задачи</h3>
+              <div style="display:flex;gap:6px">
+                <button class="btn secondary sm" id="tvList" onclick="setTaskView('list')">☰ Список</button>
+                <button class="btn secondary sm" id="tvBoard" onclick="setTaskView('board')">⬛ Доска</button>
+              </div>
+            </div>
             <div class="row" style="margin-bottom:10px">
-              <input class="field" id="taskTitle" placeholder="Новая задача..." style="margin:0">
+              <input class="field" id="taskTitle" placeholder="Новая задача..." style="margin:0" onkeydown="if(event.key==='Enter')createTask()">
               <select class="field" id="taskPriority" style="width:100px;margin:0"><option value="normal">обычная</option><option value="high">срочная</option><option value="low">низкая</option></select>
               <button class="btn" onclick="createTask()">+</button>
             </div>
-            <div style="display:flex;gap:6px;margin-bottom:10px">
+            <!-- List filters (hidden in board mode) -->
+            <div id="taskListFilters" style="display:flex;gap:6px;margin-bottom:10px">
               <button class="btn secondary sm" onclick="filterTasks('all')" id="tf_all">Все</button>
               <button class="btn secondary sm" onclick="filterTasks('open')" id="tf_open">Открытые</button>
               <button class="btn secondary sm" onclick="filterTasks('done')" id="tf_done">Готово</button>
             </div>
+            <!-- List view -->
             <div id="tasksList" class="list"></div>
+            <!-- Board view -->
+            <div id="tasksBoardView" style="display:none;overflow-x:auto">
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;min-width:420px">
+                <div>
+                  <div style="font-weight:700;color:#f5bd63;margin-bottom:8px;font-size:13px">🟡 Нові</div>
+                  <div id="boardOpen" style="min-height:60px"></div>
+                </div>
+                <div>
+                  <div style="font-weight:700;color:#35d7e9;margin-bottom:8px;font-size:13px">🔵 В роботі</div>
+                  <div id="boardInProgress" style="min-height:60px"></div>
+                </div>
+                <div>
+                  <div style="font-weight:700;color:#48e08c;margin-bottom:8px;font-size:13px">🟢 Готово</div>
+                  <div id="boardDone" style="min-height:60px"></div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="card"><h3>Умная команда</h3>
             <input class="field" id="commandInput" placeholder="добавь задачу позвонить клиенту" onkeydown="if(event.key==='Enter')runCommand()">
@@ -1215,36 +1241,71 @@ function doneTask(id){
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
+var _taskView='list';
+function setTaskView(v){
+  _taskView=v;
+  $('tasksList').style.display=v==='list'?'':'none';
+  $('tasksBoardView').style.display=v==='board'?'':'none';
+  $('taskListFilters').style.display=v==='list'?'flex':'none';
+  $('tvList').className='btn '+(v==='list'?'':'secondary ')+'sm';
+  $('tvBoard').className='btn '+(v==='board'?'':'secondary ')+'sm';
+  if(v==='board')renderTasksBoard();else renderTasks();
+}
 function loadTasks(){
-  api('/tasks').then(function(d){allTasks=d.tasks||[];renderTasks()});
+  api('/tasks').then(function(d){allTasks=d.tasks||[];if(_taskView==='board')renderTasksBoard();else renderTasks()});
 }
 function filterTasks(f){taskFilter=f;renderTasks()}
 function renderTasks(){
   var list=allTasks.filter(function(t){if(taskFilter==='open')return t.status!=='done';if(taskFilter==='done')return t.status==='done';return true});
   $('tasksList').innerHTML=list.map(function(t){
     var done=t.status==='done';
+    var inprog=t.status==='in_progress';
+    var badgeCls=done?'done':(inprog?'open':(t.priority==='high'?'high':'open'));
+    var badgeTxt=done?'✓':(inprog?'⚙':'●');
     return'<div class="item"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
-      +'<span class="badge '+(done?'done':(t.priority==='high'?'high':'open'))+'">'+esc(done?'✓':t.priority||'обычная')+'</span>'
+      +'<span class="badge '+badgeCls+'" style="'+(inprog?'background:var(--cyan);color:#000':'')+'">'+badgeTxt+'</span>'
       +'<span style="'+(done?'text-decoration:line-through;color:var(--muted)':'')+'">'+(esc(t.title))+'</span>'
+      +(t.priority==='high'?'<span style="font-size:10px;color:#ff6b6b">🔴 срочно</span>':'')
       +'<span style="margin-left:auto;color:var(--muted);font-size:11px">'+esc(t.owner||'')+'</span>'
       +'</div>'
       +'<div class="item-actions">'
-      +'<button class="btn secondary sm" onclick="toggleTask(\''+t.id+'\')">'+(done?'Открыть':'✓ Готово')+'</button>'
+      +(!inprog&&!done?'<button class="btn secondary sm" onclick="setTaskStatus(\''+t.id+'\',\'in_progress\')">▶ В роботу</button>':'')
+      +(done?'<button class="btn secondary sm" onclick="setTaskStatus(\''+t.id+'\',\'open\')">↩ Открыть</button>':'<button class="btn secondary sm" onclick="setTaskStatus(\''+t.id+'\',\'done\')">✓ Готово</button>')
       +'<button class="btn danger sm" onclick="deleteTask(\''+t.id+'\')">✕</button>'
       +'</div></div>';
   }).join('')||'<div class="item-meta">Нет задач.</div>';
 }
+function taskCardHTML(t){
+  return'<div class="item" style="margin-bottom:6px;cursor:pointer">'
+    +'<div class="item-title">'+esc(t.title)+'</div>'
+    +(t.priority==='high'?'<div style="font-size:10px;color:#ff6b6b;margin-top:2px">🔴 Срочно</div>':'')
+    +'<div class="item-actions" style="margin-top:6px">'
+    +(t.status!=='in_progress'&&t.status!=='done'?'<button class="btn secondary sm" style="font-size:11px" onclick="setTaskStatus(\''+t.id+'\',\'in_progress\')">▶</button>':'')
+    +(t.status==='in_progress'?'<button class="btn sm" style="font-size:11px;background:var(--cyan);color:#000" onclick="setTaskStatus(\''+t.id+'\',\'done\')">✓</button>':'')
+    +(t.status==='done'?'<button class="btn secondary sm" style="font-size:11px" onclick="setTaskStatus(\''+t.id+'\',\'open\')">↩</button>':'')
+    +'<button class="btn danger sm" style="font-size:11px" onclick="deleteTask(\''+t.id+'\')">✕</button>'
+    +'</div></div>';
+}
+function renderTasksBoard(){
+  var open=allTasks.filter(function(t){return t.status!=='done'&&t.status!=='in_progress'});
+  var inprog=allTasks.filter(function(t){return t.status==='in_progress'});
+  var done=allTasks.filter(function(t){return t.status==='done'});
+  $('boardOpen').innerHTML=open.map(taskCardHTML).join('')||'<div class="item-meta">Порожньо</div>';
+  $('boardInProgress').innerHTML=inprog.map(taskCardHTML).join('')||'<div class="item-meta">Порожньо</div>';
+  $('boardDone').innerHTML=done.slice(0,8).map(taskCardHTML).join('')||'<div class="item-meta">Порожньо</div>';
+}
 function createTask(){
   var title=($('taskTitle').value||'').trim();var priority=$('taskPriority').value;if(!title)return;
-  api('/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:title,priority:priority})})
+  api('/tasks',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({title:title,priority:priority})})
   .then(function(d){$('taskTitle').value='';alertMsg(d.success?'Задача добавлена':(d.error||'Ошибка'),!!d.success);loadTasks();loadStats()});
 }
-function toggleTask(id){
-  api('/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'toggle'})})
+function setTaskStatus(id,status){
+  api('/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({status:status})})
   .then(function(){loadTasks();loadStats()});
 }
+function toggleTask(id){setTaskStatus(id,'done');}
 function deleteTask(id){
-  api('/tasks/'+id,{method:'DELETE',headers:{'Content-Type':'application/json'}}).then(function(){loadTasks();loadStats()});
+  api('/tasks/'+id,{method:'DELETE',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken}}).then(function(){loadTasks();loadStats()});
 }
 function runCommand(){
   var cmd=($('commandInput').value||'').trim();if(!cmd)return;
@@ -2215,9 +2276,15 @@ def task_item(task_id):
     data = request.get_json(silent=True) or {}
     if data.get("action") == "toggle":
         task["status"] = "open" if task.get("status") == "done" else "done"
+    if "status" in data:
+        allowed_statuses = {"open", "in_progress", "done"}
+        s = str(data["status"])
+        if s in allowed_statuses:
+            task["status"] = s
     if "title" in data: task["title"] = str(data["title"]).strip()
     if "priority" in data: task["priority"] = str(data["priority"])
     persist_state()
+    audit("task_update", f"id={task_id} status={task.get('status')}", user=current_user()["username"])
     return jsonify({"success": True, "task": task})
 
 # ── Command ───────────────────────────────────────────────────────────────────
@@ -2968,9 +3035,9 @@ def crm_update(client_id):
 
 
 
+
 @app.route("/backup")
 def backup_download():
-    """Download all JSON data as a single .zip archive."""
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     import zipfile, io
     buf = io.BytesIO()
@@ -2986,8 +3053,7 @@ def backup_download():
     ]
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, fpath in data_files:
-            from pathlib import Path as _P
-            if _P(fpath).exists():
+            if Path(fpath).exists():
                 zf.write(fpath, name)
     buf.seek(0)
     from flask import send_file
@@ -2997,7 +3063,6 @@ def backup_download():
 
 @app.route("/restore", methods=["POST"])
 def restore_backup():
-    """Restore JSON data from uploaded .zip archive."""
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     import zipfile, io
     f = request.files.get("file")
@@ -3019,8 +3084,7 @@ def restore_backup():
             for name in zf.namelist():
                 if name in file_map:
                     data = json.loads(zf.read(name).decode("utf-8"))
-                    from pathlib import Path as _P
-                    _P(file_map[name]).write_text(
+                    Path(file_map[name]).write_text(
                         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
                     restored.append(name)
         audit("restore", f"files={restored}", user=current_user()["username"])
@@ -3031,7 +3095,6 @@ def restore_backup():
 
 @app.route("/export")
 def export_data():
-    """Export all data as a single JSON bundle."""
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     bundle = {
         "state":     load_json(STATE_FILE, {}),
@@ -3053,7 +3116,6 @@ def export_data():
 
 @app.route("/crm/<client_id>", methods=["PATCH"])
 def crm_update_client(client_id):
-    """Update client fields (status, name, phone, etc.)."""
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     data = request.get_json(silent=True) or {}
     clients = load_json(CRM_FILE, [])
