@@ -16,7 +16,7 @@ Remove-Item -Force ".git\HEAD.lock" -ErrorAction SilentlyContinue
 Remove-Item -Force ".git\MERGE_HEAD" -ErrorAction SilentlyContinue
 Write-Host "[1/3] Lock files cleared" -ForegroundColor Green
 
-# Check if already ahead
+# Check latest commit
 $logOutput = git log --oneline -1 2>&1
 Write-Host "[2/3] Latest commit: $logOutput" -ForegroundColor Yellow
 Write-Host ""
@@ -46,9 +46,17 @@ Write-Host $result
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "================================================" -ForegroundColor Green
-    Write-Host "  PUSHED! Render will deploy in ~2 minutes." -ForegroundColor Green
+    Write-Host "  PUSHED! Render deploy ~2 min." -ForegroundColor Green
     Write-Host "  https://nexus-ai-48sm.onrender.com/healthz" -ForegroundColor Green
     Write-Host "================================================" -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "Запустити keepalive (щоб Render не засипав)? [y/N]" -ForegroundColor Cyan
+    $ans = Read-Host
+    if ($ans -match "^[yY]") {
+        Write-Host "Запускаю keepalive.py у фоні..." -ForegroundColor Green
+        Start-Process python -ArgumentList "keepalive.py" -WindowStyle Normal
+    }
 } else {
     Write-Host ""
     Write-Host "Push failed. Check your token has 'repo' scope." -ForegroundColor Red
