@@ -1180,7 +1180,7 @@ function renderMessages(){
     var w=document.createElement('div');w.className='msgwrap '+(m.role==='user'?'user':'ai');w.dataset.id=m.id;
     w.innerHTML='<div class="speaker">'+(m.role==='user'?'Никита':'NEXUS')+'</div>'
       +'<div class="bubble '+(m.role==='user'?'user':'ai')+'">'+md(m.content)+'</div>'
-      +(m.role==='user'?'<button class="edit-btn" onclick="editMessage(\''+m.id+'\')">✏ редактировать</button>':'');
+      +(m.role==='user'?'':' ')
     box.appendChild(w);
   });
   box.scrollTop=box.scrollHeight;
@@ -1200,7 +1200,7 @@ function sendMsg(voice){
     var reader=r.body.getReader(),dec=new TextDecoder();
     function pump(){return reader.read().then(function(x){
       if(x.done){$('speaking').classList.remove('on');loadStats();loadHistory();return}
-      dec.decode(x.value).split('\n\n').forEach(function(line){
+      dec.decode(x.value).split(String.fromCharCode(10)+String.fromCharCode(10)).forEach(function(line){
         if(line.indexOf('data: ')===0){try{var d=JSON.parse(line.slice(6));if(d.token){aiMsg.content+=d.token;renderMessages()}if(d.audio)playB64(d.audio)}catch(e){}}
       });return pump();
     })}return pump();
@@ -1237,10 +1237,10 @@ function globalSearchRun(){
       var label=typeLabels[r.type]||r.type;
       var sub=r.subtitle?'<div class="item-meta" style="margin-top:2px">'+esc(r.subtitle)+'</div>':'';
       var action='';
-      if(r.type==='task')action='onclick="showPage('tasksPage')"';
-      if(r.type==='client')action='onclick="showPage('crmPage')"';
-      if(r.type==='calendar')action='onclick="showPage('calendarPage')"';
-      if(r.type==='reminder')action='onclick="showPage('remindersPage')"';
+      if(r.type==='task')action='onclick="showPage(&quot;tasksPage&quot;)';
+      if(r.type==='client')action='onclick="showPage(&quot;crmPage&quot;)';
+      if(r.type==='calendar')action='onclick="showPage(&quot;calendarPage&quot;)';
+      if(r.type==='reminder')action='onclick="showPage(&quot;remindersPage&quot;)';
       return'<div class="item" style="cursor:pointer" '+action+'>'
         +'<div style="display:flex;align-items:center;gap:8px">'
         +'<span class="badge open" style="min-width:22px;text-align:center">'+icon+'</span>'
@@ -1262,7 +1262,7 @@ function searchHistory(inputId,outId){
 }
 
 function exportChat(){
-  var text=messages.map(function(m){return(m.role==='user'?'Никита':'NEXUS')+': '+m.content}).join('\n\n');
+  var text=messages.map(function(m){return(m.role==='user'?'Никита':'NEXUS')+': '+m.content}).join(String.fromCharCode(10)+String.fromCharCode(10));
   var blob=new Blob([text],{type:'text/plain;charset=utf-8'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='nexus_chat_'+new Date().toISOString().slice(0,10)+'.txt';a.click();
 }
@@ -1292,17 +1292,19 @@ function loadFiles(){
     if(!files.length){$('filesList').innerHTML='<div class="item-meta">Немає завантажених файлів.</div>';return;}
     $('filesList').innerHTML=files.map(function(f){
       var ext=(f.name.split('.').pop()||'').toLowerCase();
-      var icon={'pdf':'📄','docx':'📝','doc':'📝','txt':'📃','png':'🖼','jpg':'🖼','jpeg':'🖼','csv':'📊','xlsx':'📊'};
-      var ico=icon[ext]||'📁';
+      var iconMap={'pdf':'📄','docx':'📝','doc':'📝','txt':'📃','png':'🖼','jpg':'🖼','jpeg':'🖼','csv':'📊','xlsx':'📊'};
+      var ico=iconMap[ext]||'📁';
       var sizeStr=f.size>1048576?(f.size/1048576).toFixed(1)+' MB':(f.size>1024?(f.size/1024).toFixed(0)+' KB':f.size+' B');
+      var safeName=esc(f.name);
+      var encodedName=encodeURIComponent(f.name);
       return'<div class="item" style="display:flex;align-items:center;gap:10px">'
         +'<span style="font-size:20px">'+ico+'</span>'
         +'<div style="flex:1;overflow:hidden">'
-        +'<div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(f.name)+'</div>'
+        +'<div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+safeName+'</div>'
         +'<div class="item-meta">'+sizeStr+(f.date?' · '+esc(f.date):'')+'</div>'
         +'</div>'
-        +'<a class="btn secondary sm" href="/files/'+encodeURIComponent(f.name)+'" download>⬇</a>'
-        +'<button class="btn danger sm" onclick="deleteFile(''+esc(f.name)+'')">✕</button>'
+        +'<a class="btn secondary sm" href="/files/'+encodedName+'" download>⬇</a>'
+        +'<button class="btn danger sm" data-fn="'+safeName+'" onclick="deleteFile(this.dataset.fn)">✕</button>'
         +'</div>';
     }).join('');
   });
@@ -1362,8 +1364,8 @@ function loadDashboard(){
       return'<div class="item" style="display:flex;align-items:center;gap:8px">'+
         '<span class="badge open" style="'+badgeStyle+'">'+label+'</span>'+
         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(t.title)+'</span>'+
-        (!isinp?'<button class="btn secondary sm" onclick="setDashTaskInProgress(''+t.id+'')" style="padding:2px 6px;font-size:10px">▶</button>':'')+
-        '<button class="btn secondary sm" onclick="doneTask(''+t.id+'')" style="padding:2px 8px;font-size:11px">✓</button>'+
+        (!isinp?'<button class="btn secondary sm" data-tid="'+t.id+'" onclick="setDashTaskInProgress(this.dataset.tid)" style="padding:2px 6px;font-size:10px">▶</button>':'')+
+        '<button class="btn secondary sm" data-tid="'+t.id+'" onclick="doneTask(this.dataset.tid)" style="padding:2px 8px;font-size:11px">✓</button>'+
       '</div>';
     }).join('')||'<div class="item-meta">🎉 Всі задачі виконані!</div>';
   });
@@ -1416,9 +1418,9 @@ function renderTasks(){
       +'<span style="margin-left:auto;color:var(--muted);font-size:11px">'+esc(t.owner||'')+'</span>'
       +'</div>'
       +'<div class="item-actions">'
-      +(!inprog&&!done?'<button class="btn secondary sm" onclick="setTaskStatus(\''+t.id+'\',\'in_progress\')">▶ В роботу</button>':'')
-      +(done?'<button class="btn secondary sm" onclick="setTaskStatus(\''+t.id+'\',\'open\')">↩ Открыть</button>':'<button class="btn secondary sm" onclick="setTaskStatus(\''+t.id+'\',\'done\')">✓ Готово</button>')
-      +'<button class="btn danger sm" onclick="deleteTask(\''+t.id+'\')">✕</button>'
+      +(!inprog&&!done?'<button class="btn secondary sm" data-tid="'+t.id+'" data-st="in_progress" onclick="setTaskStatus(this.dataset.tid,this.dataset.st)">▶ В роботу</button>':'')
+      +(done?'<button class="btn secondary sm" data-tid="'+t.id+'" data-st="open" onclick="setTaskStatus(this.dataset.tid,this.dataset.st)">↩ Открыть</button>':'<button class="btn secondary sm" data-tid="'+t.id+'" data-st="done" onclick="setTaskStatus(this.dataset.tid,this.dataset.st)">✓ Готово</button>')
+      +'<button class="btn danger sm" data-tid="'+t.id+'" onclick="deleteTask(this.dataset.tid)">✕</button>'
       +'</div></div>';
   }).join('')||'<div class="item-meta">Нет задач.</div>';
 }
@@ -1427,10 +1429,10 @@ function taskCardHTML(t){
     +'<div class="item-title">'+esc(t.title)+'</div>'
     +(t.priority==='high'?'<div style="font-size:10px;color:#ff6b6b;margin-top:2px">🔴 Срочно</div>':'')
     +'<div class="item-actions" style="margin-top:6px">'
-    +(t.status!=='in_progress'&&t.status!=='done'?'<button class="btn secondary sm" style="font-size:11px" onclick="setTaskStatus(\''+t.id+'\',\'in_progress\')">▶</button>':'')
-    +(t.status==='in_progress'?'<button class="btn sm" style="font-size:11px;background:var(--cyan);color:#000" onclick="setTaskStatus(\''+t.id+'\',\'done\')">✓</button>':'')
-    +(t.status==='done'?'<button class="btn secondary sm" style="font-size:11px" onclick="setTaskStatus(\''+t.id+'\',\'open\')">↩</button>':'')
-    +'<button class="btn danger sm" style="font-size:11px" onclick="deleteTask(\''+t.id+'\')">✕</button>'
+    +(t.status!=='in_progress'&&t.status!=='done'?'<button class="btn secondary sm" style="font-size:11px" data-tid="'+t.id+'" data-st="in_progress" onclick="setTaskStatus(this.dataset.tid,this.dataset.st)">▶</button>':'')
+    +(t.status==='in_progress'?'<button class="btn sm" style="font-size:11px;background:var(--cyan);color:#000" data-tid="'+t.id+'" data-st="done" onclick="setTaskStatus(this.dataset.tid,this.dataset.st)">✓</button>':'')
+    +(t.status==='done'?'<button class="btn secondary sm" style="font-size:11px" data-tid="'+t.id+'" data-st="open" onclick="setTaskStatus(this.dataset.tid,this.dataset.st)">↩</button>':'')
+    +'<button class="btn danger sm" style="font-size:11px" data-tid="'+t.id+'" onclick="deleteTask(this.dataset.tid)">✕</button>'
     +'</div></div>';
 }
 function renderTasksBoard(){
@@ -1488,7 +1490,7 @@ function renderCrm(){
       +'<td>'+(bizIcon[c.business]||'📌')+' '+esc(c.business||'—')+'</td>'
       +'<td><span style="color:'+sColor[st]+'">'+sLabel[st]+'</span></td>'
       +'<td>'+((c.notes||[]).length)+'</td>'
-      +'<td><button class="btn secondary sm" onclick="openClient(''+c.id+'')">Открыть</button></td>'
+      +'<td><button class="btn secondary sm" data-cid="'+c.id+'" onclick="openClient(this.dataset.cid)">Открыть</button></td>'
       +'</tr>';
   });
   html+='</tbody></table>';
@@ -1502,7 +1504,7 @@ function renderCrmPipeline(list){
     html+='<div style="background:var(--bg2);border-radius:12px;padding:10px;min-height:100px">';
     html+='<div style="font-size:11px;font-weight:700;color:'+s.color+';margin-bottom:8px;text-transform:uppercase">'+s.label+' ('+cols.length+')</div>';
     cols.forEach(function(c){
-      html+='<div onclick="openClient(''+c.id+'')" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;cursor:pointer" onmouseover="this.style.borderColor=''+s.color+''" onmouseout="this.style.borderColor='var(--border)'">'
+      html+='<div data-cid="'+c.id+'" onclick="openClient(this.dataset.cid)" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:6px;cursor:pointer" data-color="'+s.color+'">'
         +'<div style="font-weight:600;font-size:13px">'+esc(c.name)+'</div>'
         +'<div style="font-size:11px;color:var(--muted)">'+esc(c.phone||'')+'</div>'
         +'</div>';
@@ -1675,6 +1677,11 @@ function addAnalyticsRecord(){
 }
 
 // ── Email ─────────────────────────────────────────────────────────────────────
+function replyEmail(el){
+  var frm=el.dataset.frm||'';var subj=el.dataset.subj||'';
+  $('emailTo').value=frm;$('emailSubject').value='Re: '+subj;
+  showPage('emailPage');
+}
 function loadEmails(){
   $('emailList').innerHTML='<div class="item-meta">Загрузка...</div>';
   api('/emails').then(function(d){
@@ -1683,12 +1690,12 @@ function loadEmails(){
     $('emailList').innerHTML=emails.map(function(e){
       var subj=esc(e.subject||''), frm=esc(e.from_addr||''), frname=esc(e.from_name||e.from_addr||'');
       return'<div class="item" style="cursor:pointer">'
-        +'<div onclick="$(\'emailTo\').value=\''+frm+'\';$(\'emailSubject\').value=\'Re: '+subj+'\'">'
+        +'<div data-frm="'+frm+'" data-subj="'+subj+'" onclick="replyEmail(this)">'
         +'<div class="item-title">'+esc(e.subject||'(без темы)')+'</div>'
         +'<div class="item-meta">'+frname+'</div>'
         +'<div style="color:var(--muted);font-size:11px">'+esc(e.date||'')+'</div>'
         +'</div>'
-        +'<button class="btn secondary sm" style="margin-top:6px;font-size:11px" onclick="event.stopPropagation();aiReply(\''+subj+'\',\''+frm+'\',\'\')">🤖 AI ответ</button>'
+        +'<button class="btn secondary sm" style="margin-top:6px;font-size:11px" data-subj="\'+subj+'" data-frm="\'+frm+'" onclick="event.stopPropagation();aiReplyEl(this)">🤖 AI ответ</button>'
         +'</div>';
     }).join('')||'<div class="item-meta">Писем нет.</div>';
   });
@@ -1723,7 +1730,7 @@ function loadReminders(){
     $('remindersList').innerHTML=list.map(function(r){
       return'<div class="item"><div class="item-title">'+esc(r.text)+'</div>'
         +'<div class="item-meta">'+esc(r.time||'')+(r.repeat!=='once'?' · '+esc(r.repeat):'')+'</div>'
-        +'<div class="item-actions"><button class="btn danger sm" onclick="deleteReminder(\''+r.id+'\')">✕</button></div></div>';
+        +'<div class="item-actions"><button class="btn danger sm" data-rid="'+r.id+'" onclick="deleteReminder(this.dataset.rid)">✕</button></div></div>';
     }).join('')||'<div class="item-meta">Нет напоминаний.</div>';
   });
 }
@@ -1772,7 +1779,7 @@ function loadAgents(){
       +'<div><div class="item-title" style="font-size:15px">'+a.name+'</div>'
       +'<div class="item-meta">'+a.desc+'</div></div></div>'
       +'<button class="btn sm" style="width:100%;background:linear-gradient(135deg,'+a.color+','+a.color+'cc);color:#041014" '
-      +'onclick="activateAgent(''+a.id+'')">💬 Чат с агентом</button>'
+      +'data-aid="'+a.id+'" onclick="activateAgent(this.dataset.aid)">💬 Чат с агентом</button>'
       +'</div>';
   }).join('');
   api('/agents').then(function(d){
@@ -1780,7 +1787,7 @@ function loadAgents(){
       return'<div class="item" style="display:flex;justify-content:space-between;align-items:center">'
         +'<div><div class="item-title">'+esc(a.name)+'</div>'
         +'<div class="item-meta">'+esc(a.description||'')+'</div></div>'
-        +'<button class="btn secondary sm" onclick="activateCustomAgent(''+esc(a.name)+'',''+esc(a.description||'')+'')">Чат</button>'
+        +'<button class="btn secondary sm" data-aname="'+esc(a.name)+'" data-adesc="'+esc(a.description||'')+'" onclick="activateCustomAgent(this.dataset.aname,this.dataset.adesc)">Чат</button>'
         +'</div>';
     }).join('')||'<div class="item-meta">Кастомных агентов нет.</div>';
   });
@@ -1790,7 +1797,7 @@ function activateAgent(id){
   activateCustomAgent(a.name,a.prompt);
 }
 function activateCustomAgent(name,prompt){
-  var intro='[Агент: '+name+'] '+prompt+'\n\nЧем могу помочь?';
+  var intro='[Агент: '+name+'] '+prompt+String.fromCharCode(10)+String.fromCharCode(10)+'Чем могу помочь?';
   messages=[{role:'assistant',content:intro}];
   renderMessages();showPage('chat');
   $('chatInput').placeholder='Чат с агентом: '+name+' (напишите что угодно...)';
@@ -2016,7 +2023,8 @@ function renderCalGrid(){
     else if(evs.length)bg='rgba(53,215,233,0.12)';
     else bg='transparent';
     var col=isToday?'#000':'var(--text)';
-    html+='<div onclick="calDayClick(\''+dateStr+'\','+JSON.stringify(evs).replace(/"/g,'&quot;')+')" style="cursor:pointer;text-align:center;padding:6px 2px;border-radius:8px;background:'+bg+';color:'+col+';border:1px solid '+(isToday?'var(--cyan)':'transparent')+';transition:background 0.2s" onmouseover="this.style.background=\'rgba(53,215,233,0.2)\'" onmouseout="this.style.background=\''+bg+'\'">'
+    var evJson=JSON.stringify(evs);
+    html+='<div data-date="'+dateStr+'" data-evs="'+encodeURIComponent(evJson)+'" onclick="calDayClick(this.dataset.date,JSON.parse(decodeURIComponent(this.dataset.evs)))" style="cursor:pointer;text-align:center;padding:6px 2px;border-radius:8px;background:'+bg+';color:'+col+';border:1px solid '+(isToday?'var(--cyan)':'transparent')+';transition:background 0.2s">'
       +'<div style="font-weight:'+(isToday?'700':'400')+'">'+d+'</div>'
       +(evs.length?'<div style="display:flex;flex-wrap:wrap;justify-content:center;margin-top:2px">'+dots+'</div>':'')
       +'</div>';
@@ -2049,7 +2057,7 @@ function loadCalendar(){
 }
 function calEventHTML(e){
   return'<div class="item"><div style="display:flex;justify-content:space-between;align-items:center"><div><div class="item-title">'+esc(e.title)+'</div>'+(e.desc?'<div class="item-meta">'+esc(e.desc)+'</div>':'')+'</div><div style="text-align:right"><div class="badge open">'+esc(e.date)+'</div>'+(e.time?'<div class="item-meta">'+esc(e.time)+'</div>':'')+'</div></div>'
-    +'<div class="item-actions"><button class="btn danger sm" onclick="deleteCalEvent(\''+e.id+'\')">✕</button></div></div>';
+    +'<div class="item-actions"><button class="btn danger sm" data-eid="'+e.id+'" onclick="deleteCalEvent(this.dataset.eid)">✕</button></div></div>';
 }
 function addCalEvent(){
   var title=($('calTitle').value||'').trim();var date=$('calDate').value;var time=$('calTime').value;var desc=($('calDesc').value||'').trim();
