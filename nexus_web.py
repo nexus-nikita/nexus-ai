@@ -463,11 +463,18 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
               <div id="quickResult" class="item-meta" style="margin-top:8px;min-height:24px"></div>
             </div>
             <div class="card">
-              <h3>📊 Прогресс задач</h3>
-              <div style="background:var(--bg2);border-radius:8px;height:8px;margin:8px 0 4px;overflow:hidden">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <h3 style="margin:0">📊 Прогресс задач</h3>
+                <button class="btn secondary sm" onclick="showPage('tasksPage')">Все →</button>
+              </div>
+              <div style="background:var(--bg2);border-radius:8px;height:8px;margin:4px 0;overflow:hidden">
                 <div id="taskProgressFill" style="height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:8px;width:0%;transition:width .6s ease"></div>
               </div>
-              <div id="taskProgressLabel" class="item-meta" style="margin-bottom:10px">Загрузка...</div>
+              <div id="taskProgressLabel" class="item-meta" style="margin-bottom:8px">Загрузка...</div>
+              <div class="row" style="margin-bottom:8px">
+                <input class="field" id="dashNewTask" placeholder="+ Нова задача..." style="margin:0" onkeydown="if(event.key==='Enter')dashAddTask()">
+                <button class="btn sm" onclick="dashAddTask()" style="white-space:nowrap">+ Додати</button>
+              </div>
               <div id="dashTasks" class="list"></div>
             </div>
           </div>
@@ -1207,21 +1214,31 @@ function loadBriefing(){
   var city=($('briefCity').value||'Kyiv').trim();$('briefingResult').textContent='Собираю брифинг...';
   api('/morning_briefing?city='+encodeURIComponent(city)).then(function(d){$('briefingResult').innerHTML=md(d.briefing||d.error||'');loadStats()});
 }
+function dashAddTask(){
+  var title=($('dashNewTask').value||'').trim();
+  if(!title)return;
+  api('/tasks',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({title:title,priority:'normal'})})
+  .then(function(d){if(d.success){$('dashNewTask').value='';loadDashboard();loadStats();alertMsg('✅ Задача додана',true);}else alertMsg(d.error||'Помилка',false)});
+}
 function loadDashboard(){
   api('/tasks').then(function(d){
     var tasks=d.tasks||[];
     var open=tasks.filter(function(t){return t.status!=='done'});
-    var high=open.filter(function(t){return t.priority==='high'});
-    var show=(high.length?high:open).slice(0,4);
+    var inprog=open.filter(function(t){return t.status==='in_progress'});
+    var high=open.filter(function(t){return t.priority==='high'&&t.status!=='in_progress'});
+    var show=(inprog.length?inprog:high.length?high:open).slice(0,5);
     $('dashTasks').innerHTML=show.map(function(t){
-      var badge=t.priority==='high'?'high':t.status==='done'?'done':'open';
-      var label=t.priority==='high'?'🔴 срочная':t.status==='done'?'✅':'🔵';
+      var isinp=t.status==='in_progress';
+      var ishigh=t.priority==='high';
+      var badgeStyle=isinp?'background:var(--cyan);color:#000':'';
+      var label=isinp?'⚙':ishigh?'🔴':'🔵';
       return'<div class="item" style="display:flex;align-items:center;gap:8px">'+
-        '<span class="badge '+badge+'">'+label+'</span>'+
+        '<span class="badge open" style="'+badgeStyle+'">'+label+'</span>'+
         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(t.title)+'</span>'+
+        (!isinp?'<button class="btn secondary sm" onclick="setDashTaskInProgress(''+t.id+'')" style="padding:2px 6px;font-size:10px">▶</button>':'')+
         '<button class="btn secondary sm" onclick="doneTask(''+t.id+'')" style="padding:2px 8px;font-size:11px">✓</button>'+
       '</div>';
-    }).join('')||'<div class="item-meta">🎉 Все задачи выполнены!</div>';
+    }).join('')||'<div class="item-meta">🎉 Всі задачі виконані!</div>';
   });
   api('/reminders').then(function(d){
     var reminders=(d.reminders||[]).slice(0,4);
@@ -1235,9 +1252,12 @@ function loadDashboard(){
 }
 
 function doneTask(id){
-  var h={'X-CSRF-Token':csrfToken};
-  api('/tasks/'+id,{method:'PATCH',headers:{...h,'Content-Type':'application/json'},body:JSON.stringify({status:'done'})})
-    .then(function(){loadDashboard();loadStats();alertMsg('✅ Задача выполнена',true)});
+  api('/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({status:'done'})})
+    .then(function(){loadDashboard();loadStats();alertMsg('✅ Задачу виконано',true)});
+}
+function setDashTaskInProgress(id){
+  api('/tasks/'+id,{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify({status:'in_progress'})})
+    .then(function(){loadDashboard();alertMsg('⚙ В роботі',true)});
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
