@@ -3,7 +3,7 @@ services:
     name: nexus-ai
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --timeout 120 --keep-alive 5 nexus_web:app
+    startCommand: python nexus_web.py
     envVars:
       - key: AI_PROVIDER
         value: openai
@@ -47,4 +47,5 @@ services:
         value: /app
     disk:
       name: nexus-data
-      mountPath
+      mountPath: /app
+      sizeGB: 1
