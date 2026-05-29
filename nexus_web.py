@@ -434,25 +434,53 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
       <!-- DASHBOARD -->
       <div class="page active" id="dashboard">
         <div class="stack">
+          <!-- KPI row -->
           <div class="grid4">
-            <div class="card stat"><div class="num" id="sMessages">0</div><div><div class="lab">Сообщений</div><div class="hint">AI диалоги</div></div></div>
-            <div class="card stat"><div class="num" id="sTasksOpen">0</div><div><div class="lab">Задач</div><div class="hint">Открытых</div></div></div>
-            <div class="card stat"><div class="num" id="sCrmClients">0</div><div><div class="lab">Клиентов</div><div class="hint">В CRM</div></div></div>
-            <div class="card stat"><div class="num" id="sBriefings">0</div><div><div class="lab">Брифингов</div><div class="hint">Утренних</div></div></div>
-          </div>
-          <div class="grid2">
-            <div class="card"><h3>Быстрый вопрос</h3>
-              <div class="row"><input class="field" id="quickInput" placeholder="Спроси NEXUS..." onkeydown="if(event.key==='Enter')quickAsk()"><button class="btn" onclick="quickAsk()">→</button></div>
-              <div id="quickResult" class="item-meta" style="margin-top:8px"></div>
+            <div class="card stat" onclick="showPage('tasksPage')" style="cursor:pointer">
+              <div class="num" id="sTasksOpen">0</div>
+              <div><div class="lab">Задач открытых</div><div class="hint" id="sTasksDone">0 выполнено</div></div>
             </div>
-            <div class="card"><h3>Утренний брифинг</h3>
+            <div class="card stat" onclick="showPage('crmPage')" style="cursor:pointer">
+              <div class="num" id="sCrmClients">0</div>
+              <div><div class="lab">Клиентов в CRM</div><div class="hint" id="sCrmNew">— новых</div></div>
+            </div>
+            <div class="card stat" onclick="showPage('monoPage')" style="cursor:pointer">
+              <div class="num" id="sMonoBalance">—</div>
+              <div><div class="lab">Monobank</div><div class="hint" id="sMonoHint">баланс UAH</div></div>
+            </div>
+            <div class="card stat">
+              <div class="num" id="sMessages">0</div>
+              <div><div class="lab">Сообщений AI</div><div class="hint" id="sBriefings">0 брифингов</div></div>
+            </div>
+          </div>
+          <!-- Quick ask + task progress -->
+          <div class="grid2">
+            <div class="card">
+              <h3>⚡ Быстрый вопрос</h3>
+              <div class="row"><input class="field" id="quickInput" placeholder="Спроси NEXUS..." onkeydown="if(event.key==='Enter')quickAsk()"><button class="btn" onclick="quickAsk()">→</button></div>
+              <div id="quickResult" class="item-meta" style="margin-top:8px;min-height:24px"></div>
+            </div>
+            <div class="card">
+              <h3>📊 Прогресс задач</h3>
+              <div style="background:var(--bg2);border-radius:8px;height:8px;margin:8px 0 4px;overflow:hidden">
+                <div id="taskProgressFill" style="height:100%;background:linear-gradient(90deg,var(--cyan),var(--green));border-radius:8px;width:0%;transition:width .6s ease"></div>
+              </div>
+              <div id="taskProgressLabel" class="item-meta" style="margin-bottom:10px">Загрузка...</div>
+              <div id="dashTasks" class="list"></div>
+            </div>
+          </div>
+          <!-- Reminders + Briefing -->
+          <div class="grid2">
+            <div class="card">
+              <h3>🔔 Напоминания</h3>
+              <div id="dashReminders" class="list"></div>
+              <button class="btn secondary sm" onclick="showPage('remindersPage')" style="margin-top:8px;width:100%">Все напоминания →</button>
+            </div>
+            <div class="card">
+              <h3>🌅 Утренний брифинг</h3>
               <div class="row"><input class="field" id="briefCity" placeholder="Город" value="Kyiv"><button class="btn" onclick="loadBriefing()">Собрать</button></div>
               <div id="briefingResult" class="item-meta" style="margin-top:8px"></div>
             </div>
-          </div>
-          <div class="grid2">
-            <div class="card"><h3>Ближайшие задачи</h3><div id="dashTasks" class="list"></div></div>
-            <div class="card"><h3>Ближайшие напоминания</h3><div id="dashReminders" class="list"></div></div>
           </div>
         </div>
       </div>
@@ -763,6 +791,20 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
             <button class="btn secondary sm" style="margin-top:8px" onclick="syncSheets()">📊 Синхронізувати з Google Sheets</button>
             <div id="sheetsStatus" class="item-meta" style="margin-top:8px"></div>
           </div>
+          <div class="card">
+            <h3>💾 Резервная копия</h3>
+            <p class="item-meta">Скачать все данные (задачи, CRM, напоминания, календарь) в один .zip файл.</p>
+            <div class="row" style="flex-wrap:wrap;gap:8px;margin-top:8px">
+              <a class="btn secondary sm" href="/backup" download>⬇ Скачать бэкап</a>
+              <a class="btn secondary sm" href="/export" download>📄 Экспорт JSON</a>
+            </div>
+            <p class="item-meta" style="margin-top:10px">Восстановить из файла:</p>
+            <div class="row" style="gap:8px">
+              <input type="file" id="restoreFile" accept=".zip" class="field" style="margin:0">
+              <button class="btn secondary sm" onclick="restoreBackup()">↑ Загрузить</button>
+            </div>
+            <div id="restoreStatus" class="item-meta" style="margin-top:6px"></div>
+          </div>
           <div class="card"><h3>Користувачі</h3>
             <div id="usersList" class="list" style="margin-bottom:12px"></div>
             <div class="grid2"><input class="field" id="newUsername" placeholder="username"><select class="field" id="newUserRole"><option value="employee">employee</option><option value="guest">guest</option><option value="admin">admin</option></select></div>
@@ -850,6 +892,29 @@ function api(url,opts){
 }
 
 
+
+// ── Backup / Restore ──────────────────────────────────────────────────────────
+function restoreBackup(){
+  var file=$('restoreFile').files[0];
+  if(!file){alertMsg('Выберите .zip файл',false);return;}
+  var fd=new FormData();fd.append('file',file);
+  $('restoreStatus').textContent='⏳ Восстановление...';
+  fetch('/restore',{method:'POST',headers:{'X-CSRF-Token':csrfToken},body:fd})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.success){
+        $('restoreStatus').textContent='✅ Восстановлено: '+d.restored.join(', ');
+        alertMsg('✅ Данные восстановлены из бэкапа',true);
+        setTimeout(function(){location.reload()},1500);
+      } else {
+        $('restoreStatus').textContent='❌ '+d.error;
+        alertMsg('❌ Ошибка восстановления: '+d.error,false);
+      }
+    }).catch(function(){
+      $('restoreStatus').textContent='❌ Ошибка сети';
+    });
+}
+
 // ── Google Sheets sync ────────────────────────────────────────────────────────
 function syncSheets(){
   var btn=event.currentTarget||document.activeElement;
@@ -885,9 +950,42 @@ setInterval(updateClock,1000);updateClock();
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 function loadStats(){
-  api('/stats').then(function(d){if(!d)return;$('sMessages').textContent=d.messages||0;$('sBriefings').textContent=d.briefings||0});
-  api('/tasks').then(function(d){if(!d)return;var open=(d.tasks||[]).filter(function(t){return t.status!=='done'}).length;$('sTasksOpen').textContent=open});
-  api('/crm').then(function(d){if(!d)return;$('sCrmClients').textContent=(d.clients||[]).length});
+  api('/stats').then(function(d){
+    if(!d)return;
+    $('sMessages').textContent=d.messages||0;
+    $('sBriefings').textContent=(d.briefings||0)+' брифингов';
+  });
+  api('/tasks').then(function(d){
+    if(!d)return;
+    var tasks=d.tasks||[];
+    var open=tasks.filter(function(t){return t.status!=='done'}).length;
+    var done=tasks.filter(function(t){return t.status==='done'}).length;
+    var total=tasks.length;
+    $('sTasksOpen').textContent=open;
+    $('sTasksDone').textContent=done+' выполнено';
+    var pct=total>0?Math.round(done/total*100):0;
+    var fill=$('taskProgressFill');
+    if(fill){fill.style.width=pct+'%';}
+    var lbl=$('taskProgressLabel');
+    if(lbl){lbl.textContent=done+' из '+total+' задач выполнено ('+pct+'%)';}
+  });
+  api('/crm').then(function(d){
+    if(!d)return;
+    var clients=d.clients||[];
+    $('sCrmClients').textContent=clients.length;
+    var now=Date.now();var week=7*86400*1000;
+    var newCount=clients.filter(function(c){return c.created&&(now-new Date(c.created).getTime())<week}).length;
+    $('sCrmNew').textContent=newCount+' за неделю';
+  });
+  api('/monobank').then(function(d){
+    if(!d||d.error)return;
+    var bal=d.balance;
+    if(typeof bal==='number'){
+      var fmt=new Intl.NumberFormat('uk-UA',{maximumFractionDigits:0}).format(bal);
+      $('sMonoBalance').textContent=fmt;
+      $('sMonoHint').textContent=(d.income?'↑'+Math.round(d.income)+' ':'')+' UAH';
+    }
+  }).catch(function(){});
 }
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
@@ -983,13 +1081,35 @@ function loadBriefing(){
 }
 function loadDashboard(){
   api('/tasks').then(function(d){
-    var open=(d.tasks||[]).filter(function(t){return t.status!=='done'}).slice(0,4);
-    $('dashTasks').innerHTML=open.map(function(t){return'<div class="item"><span class="badge '+(t.priority==='high'?'high':'open')+'">'+esc(t.priority||'open')+'</span> '+esc(t.title)+'</div>'}).join('')||'<div class="item-meta">Нет задач.</div>';
+    var tasks=d.tasks||[];
+    var open=tasks.filter(function(t){return t.status!=='done'});
+    var high=open.filter(function(t){return t.priority==='high'});
+    var show=(high.length?high:open).slice(0,4);
+    $('dashTasks').innerHTML=show.map(function(t){
+      var badge=t.priority==='high'?'high':t.status==='done'?'done':'open';
+      var label=t.priority==='high'?'🔴 срочная':t.status==='done'?'✅':'🔵';
+      return'<div class="item" style="display:flex;align-items:center;gap:8px">'+
+        '<span class="badge '+badge+'">'+label+'</span>'+
+        '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(t.title)+'</span>'+
+        '<button class="btn secondary sm" onclick="doneTask(''+t.id+'')" style="padding:2px 8px;font-size:11px">✓</button>'+
+      '</div>';
+    }).join('')||'<div class="item-meta">🎉 Все задачи выполнены!</div>';
   });
   api('/reminders').then(function(d){
-    var upcoming=(d.reminders||[]).slice(0,4);
-    $('dashReminders').innerHTML=upcoming.map(function(r){return'<div class="item"><div class="item-title">'+esc(r.text)+'</div><div class="item-meta">'+esc(r.time||r.repeat||'')+'</div></div>'}).join('')||'<div class="item-meta">Нет напоминаний.</div>';
+    var reminders=(d.reminders||[]).slice(0,4);
+    $('dashReminders').innerHTML=reminders.map(function(r){
+      return'<div class="item">'+
+        '<div class="item-title">'+esc(r.text)+'</div>'+
+        '<div class="item-meta" style="color:var(--cyan)">'+esc(r.time||r.repeat||'без времени')+'</div>'+
+      '</div>';
+    }).join('')||'<div class="item-meta">Нет напоминаний.</div>';
   });
+}
+
+function doneTask(id){
+  var h={'X-CSRF-Token':csrfToken};
+  api('/tasks/'+id,{method:'PATCH',headers:{...h,'Content-Type':'application/json'},body:JSON.stringify({status:'done'})})
+    .then(function(){loadDashboard();loadStats();alertMsg('✅ Задача выполнена',true)});
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
@@ -2525,6 +2645,92 @@ def monobank():
     except Exception as e:
         return jsonify({"token_ok": False, "error": str(e), "transactions": []})
 
+
+
+# ── Backup / Restore / Export ─────────────────────────────────────────────────
+
+@app.route("/backup")
+def backup_download():
+    """Download all JSON data as a single .zip archive."""
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    import zipfile, io
+    buf = io.BytesIO()
+    data_files = [
+        ("nexus_state.json",    STATE_FILE),
+        ("crm_data.json",       CRM_FILE),
+        ("analytics_data.json", ANALYTICS_FILE),
+        ("reminders.json",      REMINDERS_FILE),
+        ("calendar_data.json",  CALENDAR_FILE),
+        ("audit_log.json",      AUDIT_FILE),
+        ("nexus_memory.json",   MEMORY_FILE),
+        ("nexus_profile.json",  PROFILE_FILE),
+    ]
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, fpath in data_files:
+            if fpath.exists():
+                zf.write(str(fpath), arcname=name)
+    buf.seek(0)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    audit("backup_download", f"ts={ts}", user=current_user()["username"])
+    return Response(
+        buf.getvalue(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=nexus_backup_{ts}.zip"}
+    )
+
+
+@app.route("/restore", methods=["POST"])
+def restore_upload():
+    """Restore data from a .zip backup file."""
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    import zipfile, io
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"success": False, "error": "No file uploaded"})
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(f.read()))
+        allowed = {
+            "nexus_state.json":    STATE_FILE,
+            "crm_data.json":       CRM_FILE,
+            "analytics_data.json": ANALYTICS_FILE,
+            "reminders.json":      REMINDERS_FILE,
+            "calendar_data.json":  CALENDAR_FILE,
+            "nexus_memory.json":   MEMORY_FILE,
+            "nexus_profile.json":  PROFILE_FILE,
+        }
+        restored = []
+        for name in zf.namelist():
+            if name in allowed:
+                data = json.loads(zf.read(name).decode("utf-8"))
+                save_json(allowed[name], data)
+                restored.append(name)
+        audit("restore", f"files={restored}", user=current_user()["username"])
+        return jsonify({"success": True, "restored": restored})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/export")
+def export_data():
+    """Export all data as a single JSON."""
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    export = {
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "version": "2.1",
+        "tasks":     load_json(STATE_FILE, {}).get("tasks", []),
+        "crm":       load_json(CRM_FILE, []),
+        "analytics": load_json(ANALYTICS_FILE, {}),
+        "reminders": load_json(REMINDERS_FILE, []),
+        "calendar":  load_json(CALENDAR_FILE, []),
+        "profile":   load_json(PROFILE_FILE, {}),
+    }
+    audit("export", f"tasks={len(export['tasks'])} crm={len(export['crm'])}", user=current_user()["username"])
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M")
+    return Response(
+        json.dumps(export, ensure_ascii=False, indent=2),
+        mimetype="application/json",
+        headers={"Content-Disposition": f"attachment; filename=nexus_export_{ts}.json"}
+    )
 
 @app.route("/calendar", methods=["GET", "POST"])
 def calendar():
