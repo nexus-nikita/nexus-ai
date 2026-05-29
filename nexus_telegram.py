@@ -625,6 +625,49 @@ async def cmd_mono(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка Monobank: {e}")
 
 
+async def cmd_calendar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/calendar — show today's and upcoming events."""
+    if not is_allowed(update): return await deny(update)
+    from pathlib import Path as _P
+    cal_file = BASE_DIR / "calendar_data.json"
+    events = read_json(cal_file, [])
+    today = datetime.utcnow().date().isoformat()
+    today_evs = [e for e in events if e.get("date","") == today]
+    upcoming  = sorted([e for e in events if e.get("date","") > today],
+                       key=lambda e: e.get("date",""))[:5]
+    lines = [f"📅 *Календар NEXUS*\n"]
+    if today_evs:
+        lines.append("*Сьогодні:*")
+        for e in today_evs:
+            t = f" {e['time']}" if e.get("time") else ""
+            lines.append(f"• {e['title']}{t}" + (f"\n  _{e['desc']}_" if e.get("desc") else ""))
+    else:
+        lines.append("Сьогодні подій немає.")
+    if upcoming:
+        lines.append("\n*Найближчі:*")
+        for e in upcoming:
+            lines.append(f"• {e['date']} — {e['title']}" + (f" {e.get('time','')}" if e.get("time") else ""))
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_pipeline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/pipeline — CRM pipeline summary by stage."""
+    if not is_allowed(update): return await deny(update)
+    clients = read_json(CRM_FILE, [])
+    if isinstance(clients, dict):
+        clients = clients.get("clients", [])
+    stages = {"lead": "🔵 Ліди", "active": "🟡 Активні", "done": "🟢 Завершені", "lost": "🔴 Втрачені"}
+    lines = ["🗂 *CRM Pipeline*\n"]
+    for key, label in stages.items():
+        grp = [c for c in clients if c.get("status","lead") == key]
+        lines.append(f"{label}: *{len(grp)}*")
+        for c in grp[:3]:
+            lines.append(f"  • {c.get('name','?')} — {c.get('phone','')}")
+        if len(grp) > 3:
+            lines.append(f"  _…ще {len(grp)-3}_")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 async def post_init(application):
     await application.bot.set_my_commands([
         BotCommand("start",     "Запустить NEXUS"),
@@ -634,6 +677,8 @@ async def post_init(application):
         BotCommand("status",    "Статус системы"),
         BotCommand("analytics", "Аналитика за 7 дней"),
         BotCommand("crm",       "Последние клиенты"),
+        BotCommand("pipeline",  "CRM по стадіях"),
+        BotCommand("calendar",  "Події на сьогодні"),
         BotCommand("brief",     "Утренний брифинг"),
         BotCommand("weather",   "Погода"),
         BotCommand("remind",    "Установить напоминание"),
@@ -662,6 +707,8 @@ def main():
     app.add_handler(CommandHandler("weather",   cmd_weather))
     app.add_handler(CommandHandler("remind",    cmd_remind))
     app.add_handler(CommandHandler("mono",      cmd_mono))
+    app.add_handler(CommandHandler("calendar",  cmd_calendar))
+    app.add_handler(CommandHandler("pipeline",  cmd_pipeline))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
