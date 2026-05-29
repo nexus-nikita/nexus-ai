@@ -1125,7 +1125,7 @@ function md(t){
   s=s.replace(/\*([^*]+)\*/g,'<em>$1</em>');
   s=s.replace(/^[-•] (.*)$/gm,'<li>$1</li>');
   s=s.replace(/(<li>[\s\S]*?<\/li>)/g,'<ul>$1</ul>');
-  return s.replace(/\n/g,'<br>');
+  return s.split(String.fromCharCode(10)).join('<br>');
 }
 
 // ── Clock ─────────────────────────────────────────────────────────────────────
