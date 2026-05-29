@@ -769,9 +769,24 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
 
       <!-- SEARCH -->
       <div class="page" id="search">
-        <div class="card"><h3>Поиск по истории</h3>
-          <input class="field" id="globalSearch" placeholder="Введите фразу..." oninput="searchHistory('globalSearch','globalResults')">
-          <div id="globalResults" class="list"></div>
+        <div class="stack">
+          <div class="card">
+            <h3 style="margin-bottom:10px">🔍 Глобальний пошук</h3>
+            <div class="row" style="margin-bottom:4px">
+              <input class="field" id="globalSearch" placeholder="Задача, клієнт, подія, нагадування..." style="margin:0" oninput="globalSearchRun()" onkeydown="if(event.key==='Enter')globalSearchRun()">
+              <button class="btn secondary sm" onclick="globalSearchRun()">Пошук</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px" id="searchFilters">
+              <button class="btn secondary sm search-filter active" data-f="all" onclick="setSearchFilter(this,'all')">Всё</button>
+              <button class="btn secondary sm search-filter" data-f="task" onclick="setSearchFilter(this,'task')">✅ Задачи</button>
+              <button class="btn secondary sm search-filter" data-f="client" onclick="setSearchFilter(this,'client')">👥 CRM</button>
+              <button class="btn secondary sm search-filter" data-f="calendar" onclick="setSearchFilter(this,'calendar')">📅 Календарь</button>
+              <button class="btn secondary sm search-filter" data-f="reminder" onclick="setSearchFilter(this,'reminder')">🔔 Напомин.</button>
+              <button class="btn secondary sm search-filter" data-f="chat" onclick="setSearchFilter(this,'chat')">💬 Чат</button>
+            </div>
+            <div id="globalResults" class="list"></div>
+            <div id="searchEmpty" class="item-meta" style="display:none;text-align:center;padding:20px 0">Введите запрос для поиска</div>
+          </div>
         </div>
       </div>
 
@@ -1166,6 +1181,44 @@ function quickAsk(){
   .then(function(d){$('quickResult').innerHTML=md(d.reply||'');loadStats();loadHistory()});
 }
 
+var _searchFilter='all';
+function setSearchFilter(btn,f){
+  _searchFilter=f;
+  document.querySelectorAll('.search-filter').forEach(function(b){b.classList.remove('active');b.className=b.className.replace(' btn ','  btn secondary ').replace('btn btn','btn secondary');});
+  btn.className=btn.className.replace('secondary ','');
+  if($('globalSearch').value.trim())globalSearchRun();
+}
+function globalSearchRun(){
+  var q=($('globalSearch').value||'').trim();
+  if(!q){$('globalResults').innerHTML='';$('searchEmpty').style.display='';return;}
+  $('searchEmpty').style.display='none';
+  $('globalResults').innerHTML='<div class="item-meta">Поиск...</div>';
+  api('/search?q='+encodeURIComponent(q)+'&type='+_searchFilter).then(function(d){
+    var res=d.results||[];
+    if(!res.length){$('globalResults').innerHTML='<div class="item-meta">Нічого не знайдено по запиту «'+esc(q)+'»</div>';return;}
+    var typeIcons={task:'✅',client:'👥',calendar:'📅',reminder:'🔔',chat:'💬'};
+    var typeLabels={task:'Задача',client:'Клієнт',calendar:'Подія',reminder:'Нагадування',chat:'Чат'};
+    $('globalResults').innerHTML=res.map(function(r){
+      var icon=typeIcons[r.type]||'🔍';
+      var label=typeLabels[r.type]||r.type;
+      var sub=r.subtitle?'<div class="item-meta" style="margin-top:2px">'+esc(r.subtitle)+'</div>':'';
+      var action='';
+      if(r.type==='task')action='onclick="showPage('tasksPage')"';
+      if(r.type==='client')action='onclick="showPage('crmPage')"';
+      if(r.type==='calendar')action='onclick="showPage('calendarPage')"';
+      if(r.type==='reminder')action='onclick="showPage('remindersPage')"';
+      return'<div class="item" style="cursor:pointer" '+action+'>'
+        +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<span class="badge open" style="min-width:22px;text-align:center">'+icon+'</span>'
+        +'<div style="flex:1;overflow:hidden">'
+        +'<div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(r.title)+'</div>'
+        +sub
+        +'</div>'
+        +'<span class="item-meta" style="white-space:nowrap;font-size:10px">'+label+'</span>'
+        +'</div></div>';
+    }).join('');
+  });
+}
 function searchHistory(inputId,outId){
   var q=($(inputId||'historyQuery')?.value||'').toLowerCase();
   var out=$(outId||'historyResults');if(!out)return;
@@ -2807,20 +2860,52 @@ def upload_chat():
 def search():
     if not logged_in(): return jsonify({"error": "Login required."}), 401
     q = request.args.get("q", "").strip().lower()
+    type_filter = request.args.get("type", "all").strip()
     if not q: return jsonify({"results": []})
     results = []
-    for t in state.get("tasks", []):
-        if q in (t.get("title","") + t.get("desc","")).lower():
-            results.append({"type": "task", "title": t.get("title",""), "id": t.get("id","")})
-    crm = load_json(CRM_FILE, {"clients": []})
-    for c in crm.get("clients", []):
-        if q in (c.get("name","") + c.get("company","") + c.get("notes","")).lower():
-            results.append({"type": "client", "title": c.get("name",""), "id": c.get("id","")})
-    for msg in history:
-        if q in str(msg.get("content","")).lower():
-            snippet = str(msg.get("content",""))[:80]
-            results.append({"type": "chat", "title": snippet})
-    return jsonify({"results": results[:30]})
+
+    def want(t): return type_filter in ("all", t)
+
+    if want("task"):
+        for t in state.get("tasks", []):
+            if q in (t.get("title","") + " " + t.get("desc","")).lower():
+                status = t.get("status","open")
+                priority = t.get("priority","normal")
+                sub = f"{status}" + (f" · 🔴 срочная" if priority == "high" else "")
+                results.append({"type":"task","title":t.get("title",""),"subtitle":sub,"id":t.get("id","")})
+
+    if want("client"):
+        crm_raw = load_json(CRM_FILE, [])
+        clients = crm_raw if isinstance(crm_raw, list) else crm_raw.get("clients", [])
+        for c in clients:
+            haystack = " ".join([c.get("name",""), c.get("company",""), c.get("phone",""), c.get("notes","")]).lower()
+            if q in haystack:
+                results.append({"type":"client","title":c.get("name",""),
+                                 "subtitle":c.get("company","") or c.get("phone",""),
+                                 "id":c.get("id","")})
+
+    if want("calendar"):
+        for e in load_json(CALENDAR_FILE, []):
+            if q in (e.get("title","") + " " + e.get("desc","")).lower():
+                results.append({"type":"calendar","title":e.get("title",""),
+                                 "subtitle":e.get("date","") + (" " + e.get("time","") if e.get("time") else ""),
+                                 "id":e.get("id","")})
+
+    if want("reminder"):
+        for r in load_json(REMINDERS_FILE, []):
+            if q in r.get("text","").lower():
+                results.append({"type":"reminder","title":r.get("text",""),
+                                 "subtitle":r.get("time","") or r.get("repeat",""),
+                                 "id":r.get("id","")})
+
+    if want("chat"):
+        for msg in history:
+            if q in str(msg.get("content","")).lower():
+                snippet = str(msg.get("content",""))[:100]
+                role_label = "Ти" if msg.get("role") == "user" else "NEXUS"
+                results.append({"type":"chat","title":snippet,"subtitle":role_label})
+
+    return jsonify({"results": results[:40]})
 
 
 def make_audio(text: str):
