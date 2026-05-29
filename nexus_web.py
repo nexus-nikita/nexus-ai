@@ -1019,7 +1019,7 @@ var NAV=[
   ['files','📎','Файлы'],['agentsPage','🧩','Агенты'],
   ['auditPage','🛡','Аудит'],['search','🔍','Поиск'],['profilePage','👤','Профиль'],['settingsPage','⚙️','Настройки']
 ];
-var csrfToken=document.querySelector('meta[name="csrf-token"]').content;
+var csrfToken=(document.querySelector('meta[name="csrf-token"]')||{}).content||'';
 var messages=[],editingId=null,currentAudio=null,recognition=null,isListening=false;
 var crmClients=[],allTasks=[],taskFilter='all';
 var currentClientId=null;
