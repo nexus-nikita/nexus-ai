@@ -16,9 +16,9 @@ services:
       - key: OPENAI_TTS_VOICE
         value: onyx
       - key: WEB_PASSWORD
-        generateValue: true
+        value: nexus2026
       - key: WEB_SESSION_SECRET
-        generateValue: true
+        value: nexus_secret_2026_key
       - key: TELEGRAM_TOKEN
         sync: false
       - key: TELEGRAM_ALLOWED_USER_IDS
