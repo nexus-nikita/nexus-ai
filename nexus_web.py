@@ -455,6 +455,21 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
               <div><div class="lab">Сообщений AI</div><div class="hint" id="sBriefings">0 брифингов</div></div>
             </div>
           </div>
+          <!-- Quick income entry -->
+          <div class="card" style="padding:14px 18px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span style="font-weight:700;color:var(--cyan);white-space:nowrap">💰 Швидкий запис</span>
+              <select class="field" id="qBusiness" style="width:130px;margin:0;font-size:12px">
+                <option value="obshchepit">🍽 Общепит</option>
+                <option value="akva">💧 Аква</option>
+                <option value="prodvizhenie">📣 Продвижение</option>
+              </select>
+              <input class="field" id="qRevenue" type="number" placeholder="Виручка, грн" style="width:130px;margin:0;font-size:12px">
+              <input class="field" id="qExpenses" type="number" placeholder="Витрати, грн" style="width:130px;margin:0;font-size:12px">
+              <button class="btn sm" onclick="quickSaveRevenue()" style="white-space:nowrap">✓ Зберегти</button>
+              <button class="btn secondary sm" onclick="showPage('analyticsPage')" style="white-space:nowrap">📊 Аналітика →</button>
+            </div>
+          </div>
           <!-- Quick ask + task progress -->
           <div class="grid2">
             <div class="card">
@@ -1623,6 +1638,22 @@ function drawBusinessChart(records){
   });
 }
 
+function quickSaveRevenue(){
+  var biz=$('qBusiness').value;
+  var rev=parseFloat($('qRevenue').value)||0;
+  var exp=parseFloat($('qExpenses').value)||0;
+  if(!rev&&!exp){alertMsg('Введіть суму',false);return;}
+  var today=new Date().toISOString().slice(0,10);
+  var payload={date:today,business:biz,revenue:rev,expenses:exp,clients:0,comment:'швидкий запис'};
+  api('/analytics',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrfToken},body:JSON.stringify(payload)})
+  .then(function(d){
+    if(d.success){
+      $('qRevenue').value='';$('qExpenses').value='';
+      alertMsg('✅ Записано: +'+rev.toLocaleString()+' грн',true);
+      loadStats();
+    }else alertMsg(d.error||'Помилка',false);
+  });
+}
 function addAnalyticsRecord(){
   var data={
     date:$('an_date').value||new Date().toISOString().slice(0,10),
