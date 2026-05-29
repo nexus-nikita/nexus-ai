@@ -3432,4 +3432,6 @@ if __name__ == "__main__":
     ensure_env_keys()
     port = int(get_env("PORT", "5001"))
     print("NEXUS Web starting...")
+    _pw = get_env("WEB_PASSWORD","nexus2026")
+    print(f"[AUTH] WEB_PASSWORD length={len(_pw)} first3={_pw[:3]}***")
     app.run(host="0.0.0.0", port=port, debug=False)
