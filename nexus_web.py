@@ -743,12 +743,30 @@ textarea.field{padding:11px 12px;resize:vertical;line-height:1.5}select.field{cu
 
       <!-- FILES -->
       <div class="page" id="files">
-        <div class="card">
-          <h3>Загрузка файлов в чат</h3>
-          <div class="item-meta" style="margin-bottom:14px">PDF, DOCX, TXT — NEXUS прочитает и ответит на вопросы по содержимому.</div>
-          <label class="btn" for="chatFilePage" style="display:inline-flex;align-items:center;gap:8px">📎 Выбрать файл</label>
-          <input id="chatFilePage" type="file" style="display:none" onchange="uploadChatFile(this)">
-          <div id="fileResult" class="list" style="margin-top:14px"></div>
+        <div class="stack">
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <h3 style="margin:0">📁 Файли</h3>
+              <button class="btn secondary sm" onclick="loadFiles()">🔄 Оновити</button>
+            </div>
+            <div class="item-meta" style="margin-bottom:12px">PDF, DOCX, TXT, PNG — завантаж файл і задавай питання по змісту через чат.</div>
+            <div style="border:2px dashed var(--border);border-radius:12px;padding:20px;text-align:center;margin-bottom:14px;cursor:pointer;transition:border-color .2s" id="dropZone"
+              ondragover="event.preventDefault();this.style.borderColor='var(--cyan)'"
+              ondragleave="this.style.borderColor='var(--border)'"
+              ondrop="handleFileDrop(event)">
+              <div style="font-size:32px;margin-bottom:8px">📎</div>
+              <div style="color:var(--text-muted);font-size:13px">Перетягни файл або</div>
+              <label class="btn" for="chatFilePage" style="margin-top:8px;cursor:pointer">Вибрати файл</label>
+              <input id="chatFilePage" type="file" style="display:none" onchange="uploadChatFile(this)">
+            </div>
+            <div id="fileUploadStatus" class="item-meta" style="margin-bottom:8px;min-height:18px"></div>
+            <div id="filesList" class="list"></div>
+          </div>
+          <div class="card">
+            <h3>📄 RAG-документи (для пошуку)</h3>
+            <div class="item-meta" style="margin-bottom:10px">Файли що додані в базу знань NEXUS — NEXUS автоматично використовує їх у відповідях.</div>
+            <div id="ragDocsList" class="list"></div>
+          </div>
         </div>
       </div>
 
@@ -1023,6 +1041,7 @@ function showPage(page){
   if(page==='crmPage')loadCrm();
   if(page==='analyticsPage')loadAnalytics();
   if(page==='remindersPage')loadReminders();
+  if(page==='files')loadFiles();
   if(page==='monoPage')loadMono();
   if(page==='calendarPage')loadCalendar();
   if(page==='auditPage')loadAudit();
@@ -1252,6 +1271,46 @@ function toggleVoice(){
   recognition.start();
 }
 
+function loadFiles(){
+  api('/files').then(function(d){
+    var files=d.files||[];
+    if(!files.length){$('filesList').innerHTML='<div class="item-meta">Немає завантажених файлів.</div>';return;}
+    $('filesList').innerHTML=files.map(function(f){
+      var ext=(f.name.split('.').pop()||'').toLowerCase();
+      var icon={'pdf':'📄','docx':'📝','doc':'📝','txt':'📃','png':'🖼','jpg':'🖼','jpeg':'🖼','csv':'📊','xlsx':'📊'};
+      var ico=icon[ext]||'📁';
+      var sizeStr=f.size>1048576?(f.size/1048576).toFixed(1)+' MB':(f.size>1024?(f.size/1024).toFixed(0)+' KB':f.size+' B');
+      return'<div class="item" style="display:flex;align-items:center;gap:10px">'
+        +'<span style="font-size:20px">'+ico+'</span>'
+        +'<div style="flex:1;overflow:hidden">'
+        +'<div class="item-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(f.name)+'</div>'
+        +'<div class="item-meta">'+sizeStr+(f.date?' · '+esc(f.date):'')+'</div>'
+        +'</div>'
+        +'<a class="btn secondary sm" href="/files/'+encodeURIComponent(f.name)+'" download>⬇</a>'
+        +'<button class="btn danger sm" onclick="deleteFile(''+esc(f.name)+'')">✕</button>'
+        +'</div>';
+    }).join('');
+  });
+  api('/rag/docs').then(function(d){
+    var docs=d.documents||[];
+    $('ragDocsList').innerHTML=docs.length?docs.map(function(doc){
+      return'<div class="item"><div class="item-title">'+esc(doc)+'</div></div>';
+    }).join(''):'<div class="item-meta">RAG-база порожня. Завантаж файл щоб додати.</div>';
+  });
+}
+function handleFileDrop(e){
+  e.preventDefault();
+  $('dropZone').style.borderColor='var(--border)';
+  var files=e.dataTransfer.files;
+  if(!files.length)return;
+  var input={files:files};
+  uploadChatFile(input);
+}
+function deleteFile(name){
+  if(!confirm('Видалити файл «'+name+'»?'))return;
+  api('/files/'+encodeURIComponent(name),{method:'DELETE',headers:{'X-CSRF-Token':csrfToken}})
+  .then(function(d){alertMsg(d.success?'Файл видалено':'Помилка',!!d.success);loadFiles();});
+}
 function uploadChatFile(input){
   var f=input.files[0];if(!f)return;
   var fd=new FormData();fd.append('file',f);
@@ -2855,6 +2914,40 @@ def upload_chat():
     return jsonify({"success": True, "reply": reply})
 
 # -- Search -------------------------------------------------------------------
+
+@app.route("/files", methods=["GET"])
+def files_list():
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    result = []
+    if UPLOAD_DIR.exists():
+        for f in sorted(UPLOAD_DIR.iterdir()):
+            if f.is_file() and not f.name.startswith("."):
+                stat_info = f.stat()
+                from datetime import datetime as _dt
+                result.append({
+                    "name": f.name,
+                    "size": stat_info.st_size,
+                    "date": _dt.fromtimestamp(stat_info.st_mtime).strftime("%d.%m.%Y"),
+                })
+    return jsonify({"files": result})
+
+
+@app.route("/files/<path:filename>", methods=["GET", "DELETE"])
+def file_item(filename):
+    if not logged_in(): return jsonify({"error": "Login required."}), 401
+    safe = Path(filename).name  # strip path traversal
+    fpath = UPLOAD_DIR / safe
+    if request.method == "DELETE":
+        if fpath.exists():
+            fpath.unlink()
+            audit("file_delete", safe, user=current_user()["username"])
+            return jsonify({"success": True})
+        return jsonify({"success": False, "error": "Файл не знайдено"})
+    if not fpath.exists():
+        return jsonify({"error": "Not found"}), 404
+    from flask import send_file
+    return send_file(fpath, as_attachment=True, download_name=safe)
+
 
 @app.route("/search")
 def search():
