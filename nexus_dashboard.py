@@ -116,9 +116,16 @@ def logout():
 @app.route("/")
 @login_required
 def index():
-    tpl = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nexus_template.html")
-    with open(tpl, encoding="utf-8") as f:
-        return f.read()
+    # Try multiple locations for the template
+    for tpl in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "nexus_template.html"),
+        "nexus_template.html",
+        os.path.join(os.getcwd(), "nexus_template.html"),
+    ]:
+        if os.path.exists(tpl):
+            with open(tpl, encoding="utf-8") as f:
+                return f.read()
+    return "<h1>NEXUS</h1><p>Template not found. Check nexus_template.html exists.</p>", 500
 
 @app.route("/stats")
 @login_required
